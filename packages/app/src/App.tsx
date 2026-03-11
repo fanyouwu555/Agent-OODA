@@ -1,0 +1,657 @@
+import { createSignal, createEffect, onMount, Show, For, onCleanup } from 'solid-js';
+import type { Message, Skill, ConfirmationRequest, ToolCall, SSEEvent, ModelInfo, Provider } from './types';
+import { apiClient } from './services/api';
+import { createWebSocketClient } from './services/websocket';
+import { ConfirmationDialog } from './components/ConfirmationDialog';
+import { ToastContainer, showToast } from './components/Toast';
+
+function App() {
+  const [sessionId, setSessionId] = createSignal('');
+  const [message, setMessage] = createSignal('');
+  const [messages, setMessages] = createSignal<Message[]>([]);
+  const [isLoading, setIsLoading] = createSignal(false);
+  const [skills, setSkills] = createSignal<Skill[]>([]);
+  const [confirmationRequest, setConfirmationRequest] = createSignal<ConfirmationRequest | null>(null);
+  const [currentToolCalls, setCurrentToolCalls] = createSignal<ToolCall[]>([]);
+  const [connectionStatus, setConnectionStatus] = createSignal<'connected' | 'disconnected' | 'connecting'>('connecting');
+  const [modelInfo, setModelInfo] = createSignal<ModelInfo>({ name: 'moonshot-v1-8k', provider: 'Kimi', temperature: 0.7, maxTokens: 4000 });
+  const [providers, setProviders] = createSignal<Provider[]>([]);
+  const [currentThinking, setCurrentThinking] = createSignal<string>('');
+  const [currentIntent, setCurrentIntent] = createSignal<string>('');
+  const [currentReasoning, setCurrentReasoning] = createSignal<string>('');
+  const [oodaStep, setOodaStep] = createSignal<string>('');
+  const [sidebarOpen, setSidebarOpen] = createSignal(true);
+  const [activeTab, setActiveTab] = createSignal<'models' | 'skills' | 'settings'>('models');
+
+  let messagesContainer: HTMLDivElement | undefined;
+  let wsClient: ReturnType<typeof createWebSocketClient>;
+
+  onMount(() => {
+    wsClient = createWebSocketClient({
+      url: '/ws',
+      reconnect: true,
+      onOpen: () => {
+        setConnectionStatus('connected');
+        showToast('success', 'WebSocket 已连接');
+      },
+      onClose: () => {
+        setConnectionStatus('disconnected');
+        showToast('warning', 'WebSocket 已断开');
+      },
+      onMessage: (msg) => {
+        handleWebSocketMessage(msg);
+      },
+      onError: () => {
+        showToast('error', 'WebSocket 连接错误');
+      },
+    });
+    wsClient.connect();
+  });
+
+  const handleWebSocketMessage = (msg: { type: string; payload: unknown }) => {
+    switch (msg.type) {
+      case 'confirmation':
+        setConfirmationRequest(msg.payload as ConfirmationRequest);
+        break;
+      case 'tool_update':
+        const toolUpdate = msg.payload as ToolCall;
+        setCurrentToolCalls((prev) => {
+          const index = prev.findIndex((t) => t.id === toolUpdate.id);
+          if (index >= 0) {
+            const updated = [...prev];
+            updated[index] = toolUpdate;
+            return updated;
+          }
+          return [...prev, toolUpdate];
+        });
+        break;
+      case 'session_update':
+        const sessionData = msg.payload as { messages?: Message[] };
+        if (sessionData.messages) {
+          setMessages(sessionData.messages);
+        }
+        break;
+      case 'error':
+        showToast('error', String(msg.payload));
+        break;
+    }
+  };
+
+  createEffect(async () => {
+    if (!sessionId()) {
+      const result = await apiClient.createSession();
+      if (result.success && result.data) {
+        setSessionId(result.data.sessionId);
+      } else {
+        showToast('error', result.error || '创建会话失败');
+      }
+    }
+  });
+
+  createEffect(async () => {
+    const result = await apiClient.getSkills();
+    if (result.success && result.data) {
+      setSkills(result.data);
+    }
+  });
+
+  createEffect(async () => {
+    const result = await apiClient.getModels();
+    if (result.success && result.data) {
+      setProviders(result.data.providers);
+      setModelInfo(result.data.activeModel);
+    }
+  });
+
+  const switchModel = async (providerName: string, modelName: string) => {
+    const result = await apiClient.switchModel({ providerName, modelName });
+    if (result.success && result.data) {
+      setModelInfo(result.data.activeModel);
+      showToast('success', `已切换到 ${modelName}`);
+    } else {
+      showToast('error', result.error || '切换模型失败');
+    }
+  };
+
+  const scrollToBottom = () => {
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  };
+
+  createEffect(() => {
+    messages();
+    scrollToBottom();
+  });
+
+  const sendMessage = async () => {
+    if (!message() || !sessionId() || isLoading()) return;
+
+    const userMessage = message();
+    const newMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: userMessage,
+      timestamp: Date.now(),
+    };
+
+    setMessages((prev) => [...prev, newMessage]);
+    setMessage('');
+    setIsLoading(true);
+    setCurrentToolCalls([]);
+    setCurrentThinking('');
+    setCurrentIntent('');
+    setCurrentReasoning('');
+    setOodaStep('Observe: 分析用户输入...');
+
+    try {
+      await apiClient.sendMessage(sessionId(), userMessage, (event: SSEEvent) => {
+        handleSSEEvent(event);
+      });
+    } catch (error) {
+      showToast('error', '发送消息失败');
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '发送失败，请重试',
+          timestamp: Date.now(),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+      setOodaStep('');
+    }
+  };
+
+  const handleSSEEvent = (event: SSEEvent) => {
+    switch (event.type) {
+      case 'thinking':
+        setOodaStep('Orient: 理解意图...');
+        if (event.content) {
+          setCurrentThinking(event.content);
+        }
+        break;
+      case 'intent':
+        if (event.content) {
+          setCurrentIntent(event.content);
+          setOodaStep('Decide: 制定决策...');
+        }
+        break;
+      case 'reasoning':
+        if (event.content) {
+          setCurrentReasoning(event.content);
+          setOodaStep('Act: 执行行动...');
+        }
+        break;
+      case 'tool_call':
+        setOodaStep('Act: 执行工具调用...');
+        if (event.toolCall) {
+          setCurrentToolCalls((prev) => [...prev, event.toolCall!]);
+        }
+        break;
+      case 'tool_result':
+        if (event.toolCall) {
+          setCurrentToolCalls((prev) => {
+            const index = prev.findIndex((t) => t.id === event.toolCall!.id);
+            if (index >= 0) {
+              const updated = [...prev];
+              updated[index] = event.toolCall!;
+              return updated;
+            }
+            return prev;
+          });
+        }
+        break;
+      case 'result':
+        setOodaStep('完成');
+        if (event.content) {
+          const assistantMessage: Message = {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: event.content,
+            timestamp: Date.now(),
+            toolCalls: currentToolCalls(),
+            thinking: currentThinking(),
+            intent: currentIntent(),
+            reasoning: currentReasoning(),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          setCurrentToolCalls([]);
+          setCurrentThinking('');
+          setCurrentIntent('');
+          setCurrentReasoning('');
+        }
+        break;
+      case 'error':
+        showToast('error', event.content || '发生错误');
+        setOodaStep('错误');
+        break;
+      case 'confirmation':
+        if (event.confirmation) {
+          setConfirmationRequest(event.confirmation);
+        }
+        break;
+      case 'end':
+        // Stream ended, do nothing
+        break;
+    }
+  };
+
+  const handleConfirmation = async (id: string, allowed: boolean) => {
+    setConfirmationRequest(null);
+    
+    if (wsClient?.isConnected()) {
+      wsClient.confirmPermission(id, allowed);
+    } else {
+      const result = await apiClient.confirmPermission(sessionId(), id, allowed);
+      if (!result.success) {
+        showToast('error', result.error || '确认失败');
+      }
+    }
+    
+    showToast('info', allowed ? '已允许操作' : '已拒绝操作');
+  };
+
+  const callSkill = async (skillName: string) => {
+    const skillMessage = `请使用 ${skillName} 技能`;
+    setMessage(skillMessage);
+    setTimeout(() => sendMessage(), 100);
+  };
+
+  const clearMessages = () => {
+    setMessages([]);
+    setCurrentToolCalls([]);
+    showToast('info', '消息已清空');
+  };
+
+  const formatTime = (timestamp: number) => {
+    return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  return (
+    <div class="app-container">
+      <ToastContainer />
+      
+      <ConfirmationDialog
+        request={confirmationRequest()}
+        onConfirm={handleConfirmation}
+      />
+
+      <aside class={`sidebar ${sidebarOpen() ? 'open' : 'closed'}`}>
+        <div class="sidebar-header">
+          <div class="logo">
+            <div class="logo-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+              </svg>
+            </div>
+            <Show when={sidebarOpen()}>
+              <span class="logo-text">OODA Agent</span>
+            </Show>
+          </div>
+          <button class="sidebar-toggle" onClick={() => setSidebarOpen(!sidebarOpen())}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d={sidebarOpen() ? "M15 18l-6-6 6-6" : "M9 18l6-6-6-6"}/>
+            </svg>
+          </button>
+        </div>
+
+        <Show when={sidebarOpen()}>
+          <div class="sidebar-tabs">
+            <button 
+              class={`tab ${activeTab() === 'models' ? 'active' : ''}`}
+              onClick={() => setActiveTab('models')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <path d="M8 21h8M12 17v4"/>
+              </svg>
+              模型
+            </button>
+            <button 
+              class={`tab ${activeTab() === 'skills' ? 'active' : ''}`}
+              onClick={() => setActiveTab('skills')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+              </svg>
+              技能
+            </button>
+            <button 
+              class={`tab ${activeTab() === 'settings' ? 'active' : ''}`}
+              onClick={() => setActiveTab('settings')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              设置
+            </button>
+          </div>
+        </Show>
+
+        <div class="sidebar-content">
+          <Show when={sidebarOpen() && activeTab() === 'models'}>
+            <div class="models-section">
+              <div class="section-title">
+                <span>可用模型</span>
+                <div class="connection-status">
+                  <div class={`status-dot ${connectionStatus()}`}></div>
+                  <span>{connectionStatus() === 'connected' ? '已连接' : connectionStatus() === 'connecting' ? '连接中' : '已断开'}</span>
+                </div>
+              </div>
+              
+              <For each={providers()}>
+                {(provider) => (
+                  <div class="provider-group">
+                    <div class="provider-header">
+                      <span class="provider-name">{provider.name}</span>
+                      <span class="provider-type">{provider.type}</span>
+                    </div>
+                    <div class="model-list">
+                      <For each={provider.models}>
+                        {(model) => {
+                          const isActive = () => modelInfo().provider === provider.name && modelInfo().name === model.name;
+                          return (
+                            <div 
+                              class={`model-card ${isActive() ? 'active' : ''}`}
+                              onClick={() => switchModel(provider.name, model.name)}
+                            >
+                              <div class="model-info">
+                                <span class="model-name">{model.name}</span>
+                                <Show when={isActive()}>
+                                  <span class="active-badge">当前</span>
+                                </Show>
+                              </div>
+                              <div class="model-params">
+                                <span>温度: {model.temperature || 0.7}</span>
+                                <span>Tokens: {model.maxTokens || 2000}</span>
+                              </div>
+                            </div>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+
+          <Show when={sidebarOpen() && activeTab() === 'skills'}>
+            <div class="skills-section">
+              <div class="section-title">
+                <span>可用技能</span>
+                <span class="skill-count">{skills().length}</span>
+              </div>
+              <div class="skill-list">
+                <For each={skills()}>
+                  {(skill) => (
+                    <div class="skill-card" onClick={() => callSkill(skill.name)}>
+                      <div class="skill-header">
+                        <span class="skill-name">{skill.name}</span>
+                        <span class="skill-version">v{skill.version}</span>
+                      </div>
+                      <p class="skill-desc">{skill.description}</p>
+                      <span class="skill-category">{skill.category}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
+          </Show>
+
+          <Show when={sidebarOpen() && activeTab() === 'settings'}>
+            <div class="settings-section">
+              <div class="section-title">设置</div>
+              <div class="settings-group">
+                <div class="setting-item">
+                  <span>当前模型</span>
+                  <span class="setting-value">{modelInfo().name}</span>
+                </div>
+                <div class="setting-item">
+                  <span>提供商</span>
+                  <span class="setting-value">{modelInfo().provider}</span>
+                </div>
+                <div class="setting-item">
+                  <span>温度</span>
+                  <span class="setting-value">{modelInfo().temperature}</span>
+                </div>
+                <div class="setting-item">
+                  <span>最大Tokens</span>
+                  <span class="setting-value">{modelInfo().maxTokens}</span>
+                </div>
+              </div>
+              <button class="clear-btn" onClick={clearMessages}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3,6 5,6 21,6"/>
+                  <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6m3,0V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/>
+                </svg>
+                清空对话
+              </button>
+            </div>
+          </Show>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="main-header">
+          <div class="header-left">
+            <Show when={!sidebarOpen()}>
+              <button class="menu-btn" onClick={() => setSidebarOpen(true)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="3" y1="12" x2="21" y2="12"/>
+                  <line x1="3" y1="6" x2="21" y2="6"/>
+                  <line x1="3" y1="18" x2="21" y2="18"/>
+                </svg>
+              </button>
+            </Show>
+            <div class="current-model">
+              <div class="model-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <path d="M8 21h8M12 17v4"/>
+                </svg>
+                <span>{modelInfo().name}</span>
+              </div>
+              <span class="provider-label">{modelInfo().provider}</span>
+            </div>
+          </div>
+          <div class="header-right">
+            <div class={`status-indicator ${connectionStatus()}`}>
+              <div class="pulse"></div>
+              <span>{connectionStatus() === 'connected' ? '在线' : connectionStatus() === 'connecting' ? '连接中' : '离线'}</span>
+            </div>
+          </div>
+        </header>
+
+        <Show when={isLoading() && oodaStep()}>
+          <div class="ooda-progress">
+            <div class="progress-content">
+              <div class="progress-spinner">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="0">
+                    <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
+                  </circle>
+                </svg>
+              </div>
+              <div class="progress-info">
+                <span class="progress-step">{oodaStep()}</span>
+                <Show when={currentThinking()}>
+                  <p class="progress-detail">💭 {currentThinking()}</p>
+                </Show>
+                <Show when={currentIntent()}>
+                  <p class="progress-detail">🎯 {currentIntent()}</p>
+                </Show>
+                <Show when={currentReasoning()}>
+                  <p class="progress-detail">💡 {currentReasoning()}</p>
+                </Show>
+              </div>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={currentToolCalls().length > 0}>
+          <div class="tool-calls-bar">
+            <For each={currentToolCalls()}>
+              {(tool) => (
+                <div class={`tool-chip ${tool.status}`}>
+                  <Show when={tool.status === 'running'} fallback={
+                    <Show when={tool.status === 'success'} fallback={
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="15" y1="9" x2="9" y2="15"/>
+                        <line x1="9" y1="9" x2="15" y2="15"/>
+                      </svg>
+                    }>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22 4 12 14.01 9 11.01"/>
+                      </svg>
+                    </Show>
+                  }>
+                    <div class="spinner-small"></div>
+                  </Show>
+                  <span>{tool.name}</span>
+                  <Show when={tool.endTime}>
+                    <span class="tool-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        <div class="messages-container" ref={messagesContainer}>
+          <Show when={messages().length === 0 && !isLoading()}>
+            <div class="empty-state">
+              <div class="empty-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+              <h2>开始对话</h2>
+              <p>输入消息开始与 OODA Agent 交互</p>
+              <div class="quick-actions">
+                <button onClick={() => setMessage('帮我分析一下项目结构')}>分析项目</button>
+                <button onClick={() => setMessage('帮我写一个函数')}>编写代码</button>
+                <button onClick={() => setMessage('解释一下这段代码')}>代码解释</button>
+              </div>
+            </div>
+          </Show>
+
+          <div class="messages-list">
+            <For each={messages()}>
+              {(msg) => (
+                <div class={`message ${msg.role}`}>
+                  <div class="message-avatar">
+                    <Show when={msg.role === 'user'} fallback={
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 6v6l4 2"/>
+                      </svg>
+                    }>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                        <circle cx="12" cy="7" r="4"/>
+                      </svg>
+                    </Show>
+                  </div>
+                  <div class="message-body">
+                    <div class="message-header">
+                      <span class="message-author">{msg.role === 'user' ? '你' : 'OODA Agent'}</span>
+                      <span class="message-time">{formatTime(msg.timestamp)}</span>
+                    </div>
+                    <div class="message-content">
+                      <p>{msg.content}</p>
+                    </div>
+                    <Show when={msg.role === 'assistant' && (msg.thinking || msg.intent || msg.reasoning)}>
+                      <details class="ooda-details">
+                        <summary>OODA 过程</summary>
+                        <Show when={msg.thinking}><p><strong>思考:</strong> {msg.thinking}</p></Show>
+                        <Show when={msg.intent}><p><strong>意图:</strong> {msg.intent}</p></Show>
+                        <Show when={msg.reasoning}><p><strong>推理:</strong> {msg.reasoning}</p></Show>
+                      </details>
+                    </Show>
+                    <Show when={msg.toolCalls && msg.toolCalls.length > 0}>
+                      <div class="message-tools">
+                        <For each={msg.toolCalls}>
+                          {(tool) => (
+                            <div class={`tool-result ${tool.status}`}>
+                              <span class="tool-name">{tool.name}</span>
+                              <Show when={tool.status === 'success'}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                  <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                              </Show>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
+                  </div>
+                </div>
+              )}
+            </For>
+            
+            <Show when={isLoading()}>
+              <div class="message assistant loading">
+                <div class="message-avatar">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                  </svg>
+                </div>
+                <div class="message-body">
+                  <div class="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                </div>
+              </div>
+            </Show>
+          </div>
+        </div>
+
+        <footer class="input-area">
+          <div class="input-container">
+            <textarea
+              value={message()}
+              onInput={(e) => setMessage(e.currentTarget.value)}
+              placeholder="输入你的问题..."
+              disabled={isLoading()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
+              rows={1}
+            />
+            <button 
+              class="send-btn" 
+              onClick={sendMessage}
+              disabled={isLoading() || !message().trim()}
+            >
+              <Show when={!isLoading()} fallback={
+                <div class="btn-spinner"></div>
+              }>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </Show>
+            </button>
+          </div>
+          <p class="input-hint">按 Enter 发送，Shift + Enter 换行</p>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+export default App;

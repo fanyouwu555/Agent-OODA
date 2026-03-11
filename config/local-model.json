@@ -1,0 +1,114 @@
+{
+  "$schema": "https://ooda-agent.ai/config.json",
+  "activeProvider": "kimi",
+  "activeModel": "moonshot-v1-8k",
+  "provider": {
+    "local-ollama": {
+      "type": "ollama",
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ollama",
+      "options": {
+        "baseURL": "http://localhost:11434",
+        "apiKey": "token-unused"
+      },
+      "models": {
+        "qwen3:4b": {
+          "name": "qwen3:4b",
+          "temperature": 0.7,
+          "maxTokens": 2000
+        },
+        "qwen3:8b": {
+          "name": "qwen3:8b",
+          "temperature": 0.7,
+          "maxTokens": 4000
+        }
+      }
+    },
+    "kimi": {
+      "type": "kimi",
+      "name": "Kimi",
+      "options": {
+        "baseURL": "https://api.moonshot.cn/v1",
+        "apiKey": "sk-Qtd5wAEtXggG8DTRAXSpmLf2tx6wslDBcaZulB61Ih63PYW6"
+      },
+      "models": {
+        "moonshot-v1-8k": {
+          "name": "moonshot-v1-8k",
+          "temperature": 0.7,
+          "maxTokens": 4000
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "list": "allow",
+    "write": "ask",
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "ask",
+    "question": "allow",
+    "todowrite": "allow",
+    "todoread": "allow"
+  },
+  "agent": {
+    "default": "build",
+    "available": ["build", "plan", "general", "explore"],
+    "configs": {
+      "build": {
+        "name": "build",
+        "description": "构建agent，用于代码编写",
+        "systemPrompt": "你是一个专业的代码编写助手，擅长编写高质量、可维护的代码。",
+        "tools": ["read", "write", "edit", "bash", "grep", "glob", "list"],
+        "model": {
+          "name": "moonshot-v1-8k",
+          "temperature": 0.7,
+          "topP": 0.9,
+          "maxTokens": 4000
+        }
+      },
+      "plan": {
+        "name": "plan",
+        "description": "规划agent，用于任务规划",
+        "systemPrompt": "你是一个任务规划专家，擅长分析需求并制定详细的执行计划。",
+        "tools": ["read", "grep", "glob", "list"],
+        "model": {
+          "name": "moonshot-v1-8k",
+          "temperature": 0.5,
+          "topP": 0.8,
+          "maxTokens": 3000
+        }
+      },
+      "general": {
+        "name": "general",
+        "description": "通用agent，用于一般任务",
+        "systemPrompt": "你是一个通用的AI助手，可以处理各种任务。",
+        "tools": ["read", "write", "edit", "bash", "grep", "glob", "list", "webfetch"],
+        "model": {
+          "name": "moonshot-v1-8k",
+          "temperature": 0.7,
+          "topP": 0.9,
+          "maxTokens": 4000
+        }
+      },
+      "explore": {
+        "name": "explore",
+        "description": "探索agent，用于代码探索",
+        "systemPrompt": "你是一个代码探索专家，擅长分析代码结构和理解项目。",
+        "tools": ["read", "grep", "glob", "list"],
+        "model": {
+          "name": "moonshot-v1-8k",
+          "temperature": 0.6,
+          "topP": 0.85,
+          "maxTokens": 3000
+        }
+      }
+    }
+  },
+  "tools": {},
+  "mcp": {
+    "servers": {}
+  }
+}

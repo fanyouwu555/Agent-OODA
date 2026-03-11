@@ -1,0 +1,143 @@
+{
+  "$schema": "https://ooda-agent.ai/config.json",
+  "provider": {
+    "local-ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ollama",
+      "options": {
+        "baseURL": "http://localhost:11434/v1",
+        "apiKey": "token-unused"
+      },
+      "models": {
+        "qianwen3:8b": {
+          "name": "qianwen3",
+          "temperature": 0.7,
+          "maxTokens": 2000
+        },
+        "glm-4:9b": {
+          "name": "glm-4",
+          "temperature": 0.7,
+          "maxTokens": 2000
+        }
+      }
+    },
+    "openai": {
+      "name": "openai",
+      "options": {
+        "apiKey": "${OPENAI_API_KEY}"
+      },
+      "models": {
+        "gpt-4": {
+          "name": "gpt-4",
+          "temperature": 0.7,
+          "maxTokens": 2000
+        },
+        "gpt-3.5-turbo": {
+          "name": "gpt-3.5-turbo",
+          "temperature": 0.7,
+          "maxTokens": 1500
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "list": "allow",
+    "write": "ask",
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "ask",
+    "question": "allow",
+    "todowrite": "allow",
+    "todoread": "allow",
+    "data_analysis": "ask",
+    "image_processing": "ask",
+    "pdf_processing": "ask",
+    "code_analysis": "allow",
+    "api_test": "ask",
+    "database_query": "ask"
+  },
+  "agent": {
+    "default": "build",
+    "available": ["build", "plan", "general", "explore"],
+    "configs": {
+      "build": {
+        "name": "build",
+        "description": "构建agent，用于代码编写",
+        "systemPrompt": "你是一个专业的代码编写助手，擅长编写高质量、可维护的代码。你应该遵循最佳实践，编写清晰、简洁的代码。",
+        "tools": ["read", "write", "edit", "bash", "grep", "glob", "list"],
+        "model": {
+          "name": "qianwen3",
+          "temperature": 0.7,
+          "topP": 0.9,
+          "maxTokens": 2000
+        }
+      },
+      "plan": {
+        "name": "plan",
+        "description": "规划agent，用于任务规划",
+        "systemPrompt": "你是一个任务规划专家，擅长分析需求并制定详细的执行计划。你应该考虑各种可能的情况，制定周全的计划。",
+        "tools": ["read", "grep", "glob", "list"],
+        "model": {
+          "name": "qianwen3",
+          "temperature": 0.5,
+          "topP": 0.8,
+          "maxTokens": 1500
+        }
+      },
+      "general": {
+        "name": "general",
+        "description": "通用agent，用于一般任务",
+        "systemPrompt": "你是一个通用的AI助手，可以处理各种任务。你应该根据用户的需求，提供准确、有用的回答。",
+        "tools": ["read", "write", "edit", "bash", "grep", "glob", "list", "webfetch"],
+        "model": {
+          "name": "qianwen3",
+          "temperature": 0.7,
+          "topP": 0.9,
+          "maxTokens": 2000
+        }
+      },
+      "explore": {
+        "name": "explore",
+        "description": "探索agent，用于代码探索",
+        "systemPrompt": "你是一个代码探索专家，擅长分析代码结构和理解项目。你应该帮助用户快速理解代码库的结构和功能。",
+        "tools": ["read", "grep", "glob", "list"],
+        "model": {
+          "name": "qianwen3",
+          "temperature": 0.6,
+          "topP": 0.85,
+          "maxTokens": 1500
+        }
+      }
+    }
+  },
+  "tools": {
+    "myCustomTool": {
+      "description": "自定义工具示例",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "输入参数"
+          }
+        },
+        "required": ["input"]
+      },
+      "handler": "./tools/custom-tool.js"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"],
+        "env": {
+          "NODE_ENV": "production"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "strictPropertyInitialization": false,
+    "noImplicitThis": false,
+    "useUnknownInCatchVariables": false,
+    "alwaysStrict": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noFallthroughCasesInSwitch": false,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": false,
+    "allowUnusedLabels": true,
+    "allowUnreachableCode": true,
+    "exactOptionalPropertyTypes": false,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@ooda-agent/*": ["./packages/*/src"]
+    },
+    "outDir": "./dist",
+    "rootDir": "."
+  },
+  "include": [
+    "packages/core/**/*",
+    "packages/server/**/*",
+    "packages/tools/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages/app/**/*"
+  ]
+}
