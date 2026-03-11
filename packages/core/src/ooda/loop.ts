@@ -1,5 +1,5 @@
 // packages/core/src/ooda/loop.ts
-import { AgentState, AgentResult, Message, Observation, Orientation, Decision } from '../types';
+import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult } from '../types';
 import { Observer } from './observe';
 import { Orienter } from './orient';
 import { Decider } from './decide';
@@ -19,16 +19,33 @@ interface PerformanceMetrics {
   totalTime: number;
 }
 
+interface LoopContext {
+  previousResults: ActionResult[];
+  learningInsights: string[];
+  adaptationNotes: string[];
+}
+
 export interface OODAEvent {
-  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete';
+  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete' | 'feedback' | 'adaptation';
   data?: {
     intent?: string;
     reasoning?: string;
+    options?: string[];
+    selectedOption?: string;
     toolCall?: {
       id: string;
       name: string;
       args: Record<string, unknown>;
       result?: unknown;
+    };
+    feedback?: {
+      observations: string[];
+      issues: string[];
+      suggestions: string[];
+    };
+    adaptation?: {
+      reason: string;
+      action: string;
     };
   };
 }
@@ -52,12 +69,24 @@ export class OODALoop {
   
   private cacheTTL = 30000;
   private performanceMetrics: PerformanceMetrics[] = [];
+  
+  private loopContext: LoopContext = {
+    previousResults: [],
+    learningInsights: [],
+    adaptationNotes: [],
+  };
 
   async run(input: string): Promise<AgentResult> {
     return this.runWithCallback(input, () => {});
   }
 
   async runWithCallback(input: string, callback: OODACallback): Promise<AgentResult> {
+    this.loopContext = {
+      previousResults: [],
+      learningInsights: [],
+      adaptationNotes: [],
+    };
+    
     const initialState: AgentState = {
       originalInput: input,
       history: [{
@@ -83,6 +112,10 @@ export class OODALoop {
       this.currentIteration++;
       
       state = this.optimizeHistory(state);
+      
+      if (this.shouldAdapt(state)) {
+        await this.adaptStrategy(state, callback);
+      }
     }
     
     this.cleanupCache();
@@ -107,6 +140,7 @@ export class OODALoop {
     await callback({ phase: 'observe' });
     console.log('[OODA] Getting observation...');
     const observation = await this.getCachedObservation(state);
+    this.enrichObservationWithContext(observation);
     console.log('[OODA] Observation complete');
     metrics.observeTime = Date.now() - observeStart;
     
@@ -126,10 +160,13 @@ export class OODALoop {
     console.log('[OODA] Getting decision...');
     const decision = await this.getCachedDecision(orientation);
     console.log('[OODA] Decision complete:', decision.nextAction.type);
+    
     await callback({ 
       phase: 'decide', 
       data: { 
-        reasoning: decision.reasoning 
+        reasoning: decision.reasoning,
+        options: decision.options.map(o => o.description),
+        selectedOption: decision.selectedOption.description,
       } 
     });
     metrics.decideTime = Date.now() - decideStart;
@@ -151,6 +188,20 @@ export class OODALoop {
     }
     
     const actionResult = await this.actor.act(decision);
+    this.loopContext.previousResults.push(actionResult);
+    
+    if (actionResult.feedback.issues.length > 0 || actionResult.feedback.suggestions.length > 0) {
+      await callback({
+        phase: 'feedback',
+        data: {
+          feedback: {
+            observations: actionResult.feedback.observations,
+            issues: actionResult.feedback.issues,
+            suggestions: actionResult.feedback.suggestions,
+          }
+        }
+      });
+    }
     
     if (decision.nextAction.toolName) {
       await callback({
@@ -160,7 +211,7 @@ export class OODALoop {
             id: `call-${state.currentStep}`,
             name: decision.nextAction.toolName,
             args: decision.nextAction.args || {},
-            result: actionResult,
+            result: actionResult.result,
           }
         }
       });
@@ -170,6 +221,8 @@ export class OODALoop {
     
     metrics.totalTime = Date.now() - cycleStartTime;
     this.performanceMetrics.push(metrics);
+    
+    this.extractLearningInsights(actionResult, decision);
     
     const newMessages: Message[] = [
       {
@@ -182,7 +235,10 @@ export class OODALoop {
           text: decision.reasoning,
         }],
       },
-      {
+    ];
+    
+    if (decision.nextAction.type === 'tool_call' || decision.nextAction.type === 'skill_call') {
+      newMessages.push({
         id: `action-${state.currentStep}`,
         role: 'assistant',
         content: JSON.stringify(decision.nextAction),
@@ -193,19 +249,23 @@ export class OODALoop {
           toolName: decision.nextAction.toolName!,
           args: decision.nextAction.args!,
         }],
-      },
-      {
+      });
+      
+      newMessages.push({
         id: `result-${state.currentStep}`,
         role: 'tool',
-        content: JSON.stringify(actionResult),
+        content: JSON.stringify(actionResult.result),
         timestamp: Date.now(),
         parts: [{
           type: 'tool_result',
           toolCallId: `call-${state.currentStep}`,
-          result: actionResult,
+          result: actionResult.result,
+          isError: !actionResult.success,
         }],
-      },
-    ];
+      });
+    }
+    
+    const isComplete = this.determineCompletion(decision, actionResult);
     
     const updatedState: AgentState = {
       ...state,
@@ -214,18 +274,20 @@ export class OODALoop {
         ...newMessages,
       ],
       currentStep: state.currentStep + 1,
-      isComplete: decision.nextAction.type === 'response',
+      isComplete,
       metadata: {
         ...state.metadata,
         lastAction: decision.nextAction,
         lastResult: actionResult,
         performanceMetrics: metrics,
+        learningInsights: this.loopContext.learningInsights,
       },
     };
     
     if (updatedState.isComplete) {
+      const output = this.generateFinalOutput(decision, actionResult);
       updatedState.result = {
-        output: decision.nextAction.content!,
+        output,
         steps: updatedState.history.map((msg, index) => ({
           type: index % 3 === 0 ? 'thought' : index % 3 === 1 ? 'action' : 'observation',
           content: msg.content,
@@ -234,11 +296,138 @@ export class OODALoop {
         metadata: {
           ...updatedState.metadata,
           performanceMetrics: this.getAveragePerformanceMetrics(),
+          totalIterations: this.currentIteration + 1,
+          learningInsights: this.loopContext.learningInsights,
         },
       };
     }
     
     return updatedState;
+  }
+
+  private enrichObservationWithContext(observation: Observation): void {
+    if (this.loopContext.previousResults.length > 0) {
+      const recentFeedback = this.loopContext.previousResults
+        .slice(-3)
+        .flatMap(r => r.feedback.observations);
+      
+      observation.context.relevantFacts.push(...recentFeedback);
+    }
+    
+    if (this.loopContext.learningInsights.length > 0) {
+      observation.context.relevantFacts.push(...this.loopContext.learningInsights.slice(-5));
+    }
+  }
+
+  private shouldAdapt(state: AgentState): boolean {
+    const recentResults = this.loopContext.previousResults.slice(-3);
+    if (recentResults.length < 2) return false;
+    
+    const failureRate = recentResults.filter(r => !r.success).length / recentResults.length;
+    if (failureRate >= 0.5) return true;
+    
+    const repeatedErrors = this.findRepeatedErrors(recentResults);
+    if (repeatedErrors.length > 0) return true;
+    
+    return false;
+  }
+
+  private findRepeatedErrors(results: ActionResult[]): string[] {
+    const errorMessages: Record<string, number> = {};
+    
+    for (const result of results) {
+      if (!result.success) {
+        const errorMsg = result.feedback.issues.join('; ');
+        errorMessages[errorMsg] = (errorMessages[errorMsg] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(errorMessages)
+      .filter(([_, count]) => count >= 2)
+      .map(([msg, _]) => msg);
+  }
+
+  private async adaptStrategy(state: AgentState, callback: OODACallback): Promise<void> {
+    const recentErrors = this.loopContext.previousResults
+      .filter(r => !r.success)
+      .flatMap(r => r.feedback.issues);
+    
+    const adaptationNote = `检测到重复失败模式: ${recentErrors.slice(0, 3).join(', ')}. 建议调整策略.`;
+    this.loopContext.adaptationNotes.push(adaptationNote);
+    
+    await callback({
+      phase: 'adaptation',
+      data: {
+        adaptation: {
+          reason: '检测到高失败率或重复错误',
+          action: '将在下一轮迭代中调整决策策略',
+        }
+      }
+    });
+    
+    console.log(`[OODA] Adapting strategy: ${adaptationNote}`);
+  }
+
+  private extractLearningInsights(actionResult: ActionResult, decision: Decision): void {
+    if (!actionResult.success) {
+      const insight = `方案 "${decision.selectedOption.description}" 失败: ${actionResult.feedback.issues.join(', ')}`;
+      this.loopContext.learningInsights.push(insight);
+    } else if (actionResult.feedback.newInformation.length > 0) {
+      const insight = actionResult.feedback.newInformation[0];
+      this.loopContext.learningInsights.push(insight);
+    }
+    
+    if (this.loopContext.learningInsights.length > 20) {
+      this.loopContext.learningInsights = this.loopContext.learningInsights.slice(-15);
+    }
+  }
+
+  private determineCompletion(decision: Decision, actionResult: ActionResult): boolean {
+    if (decision.nextAction.type === 'response') {
+      return true;
+    }
+    
+    if (decision.nextAction.type === 'clarification') {
+      return true;
+    }
+    
+    if (actionResult.success && decision.plan.subtasks.length === 0) {
+      return true;
+    }
+    
+    const pendingTasks = decision.plan.subtasks.filter(t => t.status === 'pending');
+    if (pendingTasks.length === 0 && actionResult.success) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  private generateFinalOutput(decision: Decision, actionResult: ActionResult): string {
+    if (decision.nextAction.type === 'response') {
+      return decision.nextAction.content || '任务完成';
+    }
+    
+    if (decision.nextAction.type === 'clarification') {
+      return decision.nextAction.clarificationQuestion || '需要更多信息';
+    }
+    
+    if (actionResult.success) {
+      const resultData = actionResult.result as any;
+      if (resultData && resultData.result) {
+        if (typeof resultData.result === 'string') {
+          return resultData.result;
+        }
+        try {
+          return JSON.stringify(resultData.result, null, 2);
+        } catch {
+          return '任务完成';
+        }
+      }
+      return '任务完成';
+    }
+    
+    return `任务执行遇到问题: ${actionResult.feedback.issues.join(', ')}`;
   }
 
   private async getCachedObservation(state: AgentState): Promise<Observation> {
@@ -393,6 +582,7 @@ export class OODALoop {
         iterations: this.currentIteration,
         timeout: this.timeout,
         performanceMetrics: this.getAveragePerformanceMetrics(),
+        learningInsights: this.loopContext.learningInsights,
       },
     };
   }
@@ -413,6 +603,7 @@ export class OODALoop {
         ...state.metadata,
         iterations: this.currentIteration,
         performanceMetrics: this.getAveragePerformanceMetrics(),
+        learningInsights: this.loopContext.learningInsights,
       },
     };
   }

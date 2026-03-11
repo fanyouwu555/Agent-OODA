@@ -83,6 +83,8 @@ export interface Observation {
   context: Context;
   environment: EnvironmentState;
   history: Message[];
+  anomalies?: Anomaly[];
+  patterns?: Pattern[];
 }
 
 export interface Orientation {
@@ -90,25 +92,60 @@ export interface Orientation {
   relevantContext: Context;
   constraints: Constraint[];
   knowledgeGaps: KnowledgeGap[];
+  patterns: Pattern[];
+  relationships: Relationship[];
+  assumptions: string[];
+  risks: string[];
 }
 
 export interface Decision {
+  problemStatement: string;
+  options: Option[];
+  selectedOption: Option;
   plan: ActionPlan;
   nextAction: Action;
   reasoning: string;
+  riskAssessment: RiskAssessment;
+}
+
+export interface Option {
+  id: string;
+  description: string;
+  approach: string;
+  pros: string[];
+  cons: string[];
+  estimatedComplexity: 'low' | 'medium' | 'high';
+  estimatedImpact: 'low' | 'medium' | 'high';
+  riskLevel: 'low' | 'medium' | 'high';
+  score: number;
+}
+
+export interface RiskAssessment {
+  identifiedRisks: IdentifiedRisk[];
+  mitigationStrategies: string[];
+  overallRiskLevel: 'low' | 'medium' | 'high';
+}
+
+export interface IdentifiedRisk {
+  description: string;
+  probability: number;
+  impact: number;
+  mitigation: string;
 }
 
 export interface Action {
-  type: 'tool_call' | 'skill_call' | 'response';
+  type: 'tool_call' | 'skill_call' | 'response' | 'clarification';
   toolName?: string;
   args?: Record<string, unknown>;
   content?: string;
+  clarificationQuestion?: string;
 }
 
 export interface ActionPlan {
   subtasks: Subtask[];
   dependencies: DependencyGraph;
   currentStep: number;
+  estimatedSteps: number;
 }
 
 export interface Subtask {
@@ -117,6 +154,7 @@ export interface Subtask {
   toolName: string;
   args: Record<string, unknown>;
   dependencies: string[];
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
 }
 
 export interface DependencyGraph {
@@ -128,6 +166,7 @@ export interface Intent {
   type: string;
   parameters: Record<string, unknown>;
   confidence: number;
+  rawInput?: string;
 }
 
 export interface Context {
@@ -144,6 +183,7 @@ export interface Constraint {
 
 export interface KnowledgeGap {
   topic: string;
+  description?: string;
   importance: number;
   possibleSources: string[];
 }
@@ -165,4 +205,39 @@ export interface ToolResult {
   result: unknown;
   isError: boolean;
   executionTime: number;
+}
+
+export interface Pattern {
+  type: string;
+  description: string;
+  significance: number;
+  occurrences?: number;
+}
+
+export interface Relationship {
+  from: string;
+  to: string;
+  type: 'dependency' | 'sequence' | 'causation' | 'correlation';
+  strength: number;
+}
+
+export interface Anomaly {
+  type: 'error' | 'warning' | 'unusual_pattern';
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+  context: string;
+}
+
+export interface ActionResult {
+  success: boolean;
+  result: unknown;
+  sideEffects: string[];
+  feedback: ActionFeedback;
+}
+
+export interface ActionFeedback {
+  observations: string[];
+  newInformation: string[];
+  issues: string[];
+  suggestions: string[];
 }
