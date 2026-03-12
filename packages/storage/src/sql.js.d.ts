@@ -9,6 +9,7 @@ declare module 'sql.js' {
     exec(sql: string): QueryExecResult[];
     export(): Uint8Array;
     close(): void;
+    getRowsModified(): number;
   }
 
   interface Statement {

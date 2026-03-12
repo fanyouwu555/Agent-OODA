@@ -1,6 +1,8 @@
-// packages/core/src/ooda/orient.ts
 import { Observation, Orientation, Intent, Constraint, KnowledgeGap, Pattern, Relationship } from '../types';
 import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
+import { getSessionMemory, SessionMemory } from '../memory';
+import { MemoryCompressor } from '../memory/long-term';
 
 interface AnalysisResult {
   intentType: string;
@@ -10,92 +12,283 @@ interface AnalysisResult {
   relationships: Relationship[];
   assumptions: string[];
   risks: string[];
+  contextSummary?: string;
+}
+
+const MAX_HISTORY_TOKENS = 4000;
+const COMPRESS_THRESHOLD = 20;
+const KEEP_RECENT_MESSAGES = 10;
+
+interface OrienterState {
+  conversationSummary: string;
+  compressedCount: number;
+}
+
+class OrienterStateManager {
+  private states: Map<string, OrienterState> = new Map();
+  
+  getState(sessionId: string): OrienterState {
+    if (!this.states.has(sessionId)) {
+      this.states.set(sessionId, {
+        conversationSummary: '',
+        compressedCount: 0,
+      });
+    }
+    return this.states.get(sessionId)!;
+  }
+  
+  resetState(sessionId: string): void {
+    this.states.set(sessionId, {
+      conversationSummary: '',
+      compressedCount: 0,
+    });
+  }
+  
+  initCompressedCount(sessionId: string, count: number): void {
+    const state = this.getState(sessionId);
+    state.compressedCount = count;
+  }
+  
+  clearState(sessionId: string): void {
+    this.states.delete(sessionId);
+  }
+}
+
+const orienterStateManager = new OrienterStateManager();
+
+export function resetOrienterState(sessionId: string): void {
+  orienterStateManager.resetState(sessionId);
+}
+
+export function initOrienterCompressedCount(sessionId: string, count: number): void {
+  orienterStateManager.initCompressedCount(sessionId, count);
 }
 
 export class Orienter {
+  private sessionId: string;
+  private sessionMemory: SessionMemory;
+  private state: OrienterState;
+  
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+    this.sessionMemory = getSessionMemory(sessionId);
+    this.state = orienterStateManager.getState(sessionId);
+  }
+  
   private async getLLM() {
     return getLLMService();
   }
   
   async orient(observation: Observation): Promise<Orientation> {
-    const analysisResult = await this.performDeepAnalysis(observation);
-    
-    const intent = this.buildIntent(analysisResult, observation.userInput);
-    const constraints = this.identifyConstraints(observation, analysisResult);
-    const knowledgeGaps = this.identifyKnowledgeGaps(observation, intent, analysisResult);
-    const patterns = this.synthesizePatterns(observation, analysisResult);
-    const relationships = this.mapRelationships(observation, analysisResult);
-    
-    return {
-      primaryIntent: intent,
-      relevantContext: observation.context,
-      constraints,
-      knowledgeGaps,
-      patterns,
-      relationships,
-      assumptions: analysisResult.assumptions,
-      risks: analysisResult.risks,
-    };
-  }
+        const analysisResult = await this.performDeepAnalysis(observation);
+        
+        const intent = this.buildIntent(analysisResult, observation.userInput);
+        const constraints = this.identifyConstraints(observation, analysisResult);
+        const knowledgeGaps = this.identifyKnowledgeGaps(observation, intent, analysisResult);
+        const patterns = this.synthesizePatterns(observation, analysisResult);
+        const relationships = this.mapRelationships(observation, analysisResult);
+        
+        return {
+            primaryIntent: intent,
+            relevantContext: {
+                ...observation.context,
+                contextSummary: analysisResult.contextSummary,
+            },
+            constraints,
+            knowledgeGaps,
+            patterns,
+            relationships,
+            assumptions: analysisResult.assumptions,
+            risks: analysisResult.risks,
+        };
+    }
 
   private async performDeepAnalysis(observation: Observation): Promise<AnalysisResult> {
     const llmService = await this.getLLM();
-    const prompt = this.buildAnalysisPrompt(observation);
-    const response = await llmService.generate(prompt, { maxTokens: 2000 });
     
-    return this.parseAnalysisResult(response, observation);
+    const allHistory = this.sessionMemory.getShortTerm().getRecentMessages(100);
+    const historyToUse = allHistory.length > 0 ? allHistory : observation.history;
+    
+    console.log(`[Orienter] performDeepAnalysis: allHistory=${allHistory.length}, observation.history=${observation.history.length}, historyToUse=${historyToUse.length}`);
+    
+    const { history, summary } = await this.prepareHistoryForLLM(historyToUse, llmService);
+    
+    console.log(`[Orienter] prepareHistoryForLLM returned: history.length=${history.length}, summary=${summary ? 'exists' : 'empty'}`);
+    
+    const systemPrompt = this.buildSystemPrompt();
+    const userPrompt = this.buildAnalysisPrompt(observation, summary);
+    
+    const response = await llmService.generate(userPrompt, {
+      systemPrompt,
+      history,
+      maxTokens: 2000,
+    });
+    
+    return this.parseAnalysisResult(response.text, observation);
+  }
+  
+  private async prepareHistoryForLLM(
+    messages: Array<{ role: string; content: string; timestamp?: number }>,
+    llmService: Awaited<ReturnType<typeof getLLMService>>
+  ): Promise<{ history: ChatMessage[]; summary: string }> {
+    const history: ChatMessage[] = [];
+    let summary = this.state.conversationSummary;
+    
+    if (messages.length > COMPRESS_THRESHOLD) {
+      const oldMessages = messages.slice(0, -KEEP_RECENT_MESSAGES);
+      const recentMessages = messages.slice(-KEEP_RECENT_MESSAGES);
+      
+      if (oldMessages.length > this.state.compressedCount) {
+        const newToCompress = oldMessages.slice(this.state.compressedCount);
+        
+        if (newToCompress.length > 0) {
+          const compressionResult = await this.compressMessages(newToCompress, llmService);
+          summary = compressionResult;
+          this.state.conversationSummary = summary;
+          this.state.compressedCount = oldMessages.length;
+          
+          console.log(`[Orient] Compressed ${newToCompress.length} messages into summary`);
+        }
+      }
+      
+      for (const msg of recentMessages) {
+        history.push({
+          role: msg.role === 'tool' ? 'assistant' : msg.role as 'user' | 'assistant' | 'system',
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        });
+      }
+    } else {
+      for (const msg of messages) {
+        history.push({
+          role: msg.role === 'tool' ? 'assistant' : msg.role as 'user' | 'assistant' | 'system',
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        });
+      }
+    }
+    
+    return { history, summary };
+  }
+  
+  private async compressMessages(
+    messages: Array<{ role: string; content: string }>,
+    llmService: Awaited<ReturnType<typeof getLLMService>>
+  ): Promise<string> {
+    const conversationText = messages
+      .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content).slice(0, 500)}`)
+      .join('\n');
+    
+    const existingSummary = this.state.conversationSummary;
+    
+    const prompt = `${existingSummary ? `已有对话摘要：\n${existingSummary}\n\n` : ''}请为以下对话内容生成一个简洁的摘要，保留关键信息、用户意图和重要决策：
+
+${conversationText}
+
+摘要要求：
+1. 保留用户的主要请求和意图
+2. 保留重要的决策和结论
+3. 保留关键的技术细节
+4. 简洁明了，不超过300字
+
+请直接输出摘要内容，不要有其他内容。`;
+
+    try {
+      const response = await llmService.generate(prompt, {
+        maxTokens: 500,
+      });
+      return response.text || existingSummary || '';
+    } catch (error) {
+      console.error('[Orient] Failed to compress messages:', error);
+      return existingSummary || '';
+    }
   }
 
-  private buildAnalysisPrompt(observation: Observation): string {
+  private buildSystemPrompt(): string {
+    return `你是一个智能对话分析系统，负责分析用户的意图和上下文。
+
+你的任务是：
+1. 准确理解用户的真实意图
+2. 识别对话中的模式和关系
+3. 评估潜在的风险和约束
+4. 提取关键参数和信息
+
+请以JSON格式输出分析结果，确保格式正确。`;
+  }
+
+  private buildAnalysisPrompt(observation: Observation, conversationSummary?: string): string {
     const recentHistory = observation.history
       .slice(-5)
-      .map(m => `${m.role}: ${m.content}`)
+      .map(m => {
+        const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content).slice(0, 200);
+        return `${m.role}: ${content}`;
+      })
       .join('\n');
     
     const toolResultsSummary = observation.toolResults
-      .map(r => `${r.toolName}: ${r.isError ? 'ERROR' : 'SUCCESS'}`)
-      .join(', ');
+      .slice(-3)
+      .map(r => {
+        const resultPreview = typeof r.result === 'string' 
+          ? r.result.slice(0, 100) 
+          : JSON.stringify(r.result).slice(0, 100);
+        return `${r.toolName}: ${r.isError ? 'ERROR' : 'SUCCESS'} - ${resultPreview}`;
+      })
+      .join('\n');
 
-    return `作为OODA循环的Orient阶段，你需要深入分析观察结果，理解上下文，识别模式和关系。
+    const relevantFacts = observation.context?.relevantFacts?.slice(0, 3).join('\n') || '无';
 
-## 观察数据
-- 用户输入: ${observation.userInput}
-- 最近历史: ${recentHistory || '无'}
-- 工具结果: ${toolResultsSummary || '无'}
-- 环境状态: 内存使用${Math.round(observation.environment.resourceUsage.memory * 100)}%, CPU使用${Math.round(observation.environment.resourceUsage.cpu * 100)}%
+    const summarySection = conversationSummary 
+      ? `\n## 对话历史摘要\n${conversationSummary}\n` 
+      : '';
+
+    return `请分析以下用户输入和上下文信息：
+
+## 当前用户输入
+${observation.userInput}
+${summarySection}
+## 最近对话
+${recentHistory || '无历史记录'}
+
+## 工具执行结果
+${toolResultsSummary || '无工具调用'}
+
+## 相关背景信息
+${relevantFacts}
+
+## 环境状态
+- 内存使用: ${Math.round(observation.environment.resourceUsage.memory * 100)}%
+- CPU使用: ${Math.round(observation.environment.resourceUsage.cpu * 100)}%
 
 ## 分析任务
-请进行以下分析（以JSON格式输出）：
+
+请进行以下分析并以JSON格式输出：
 
 1. **意图分析**: 理解用户真正想要什么
-   - type: 意图类型 (file_read, file_write, execute, search, code_analysis, question, general 等)
-   - parameters: 提取的关键参数
+   - type: 意图类型，可选值包括:
+     - question: 用户在提问，需要直接回答
+     - file_read: 用户想读取文件
+     - file_write: 用户想写入或修改文件
+     - execute: 用户想执行命令
+     - search: 用户想搜索信息
+     - code_analysis: 用户想分析代码
+     - general: 一般性请求或对话
+   - parameters: 从输入中提取的关键参数
    - confidence: 置信度 (0-1)
 
-2. **模式识别**: 识别观察数据中的模式
-   - 用户行为模式
-   - 问题模式
-   - 上下文模式
+2. **上下文摘要**: 简要总结当前对话的上下文
 
-3. **关系映射**: 识别组件之间的关系
-   - 文件之间的依赖关系
-   - 操作之间的因果关系
-   - 上下文关联
+3. **模式识别**: 识别观察数据中的模式
 
-4. **假设识别**: 当前分析中的假设
-   - 我们假设了什么？
-   - 这些假设是否合理？
+4. **关系映射**: 识别组件之间的关系
 
-5. **风险评估**: 潜在风险
-   - 执行风险
-   - 数据风险
-   - 资源风险
+5. **假设识别**: 当前分析中的假设
+
+6. **风险评估**: 潜在风险
 
 ## 输出格式
 {
   "intentType": "意图类型",
   "parameters": {"key": "value"},
   "confidence": 0.85,
+  "contextSummary": "当前对话的上下文摘要",
   "patterns": [
     {"type": "pattern_type", "description": "模式描述", "significance": 0.8}
   ],
@@ -118,6 +311,7 @@ export class Orienter {
           intentType: parsed.intentType || 'general',
           parameters: parsed.parameters || {},
           confidence: parsed.confidence || 0.5,
+          contextSummary: parsed.contextSummary,
           patterns: parsed.patterns || [],
           relationships: parsed.relationships || [],
           assumptions: parsed.assumptions || [],
@@ -133,35 +327,72 @@ export class Orienter {
 
   private fallbackAnalysis(observation: Observation): AnalysisResult {
     const input = observation.userInput.toLowerCase();
+    const timestamp = Date.now();
+    
     let intentType = 'general';
     const parameters: Record<string, unknown> = {};
     
-    if (input.includes('读取') || input.includes('查看') || input.includes('打开')) {
+    const patterns: Pattern[] = [
+      {
+        type: 'input_analysis',
+        description: `用户输入长度: ${observation.userInput.length} 字符`,
+        significance: 0.5,
+      },
+    ];
+    
+    if (observation.history.length > 0) {
+      patterns.push({
+        type: 'context_analysis',
+        description: `存在 ${observation.history.length} 条历史消息`,
+        significance: 0.4,
+      });
+    }
+    
+    const questionIndicators = ['什么', '如何', '为什么', '怎么', '哪', '？', '?', 'what', 'how', 'why', 'where', 'when'];
+    const hasQuestion = questionIndicators.some(indicator => input.includes(indicator));
+    
+    if (hasQuestion) {
+      intentType = 'question';
+      patterns.push({
+        type: 'intent_pattern',
+        description: '检测到问题询问意图',
+        significance: 0.8,
+      });
+    } else if (input.includes('读取') || input.includes('查看') || input.includes('打开') || input.includes('read')) {
       intentType = 'file_read';
       const pathMatch = observation.userInput.match(/['"]([^'"]+)['"]/);
       if (pathMatch) parameters.path = pathMatch[1];
-    } else if (input.includes('写入') || input.includes('保存') || input.includes('修改')) {
+    } else if (input.includes('写入') || input.includes('保存') || input.includes('修改') || input.includes('write')) {
       intentType = 'file_write';
       const pathMatch = observation.userInput.match(/['"]([^'"]+)['"]/);
       if (pathMatch) parameters.path = pathMatch[1];
-    } else if (input.includes('运行') || input.includes('执行') || input.includes('命令')) {
+    } else if (input.includes('运行') || input.includes('执行') || input.includes('命令') || input.includes('run') || input.includes('bash')) {
       intentType = 'execute';
-    } else if (input.includes('搜索') || input.includes('查找') || input.includes('查询')) {
+    } else if (input.includes('搜索') || input.includes('查找') || input.includes('查询') || input.includes('search') || input.includes('find')) {
       intentType = 'search';
-    } else if (input.includes('分析') || input.includes('解释') || input.includes('代码')) {
+    } else if (input.includes('分析') || input.includes('解释') || input.includes('代码') || input.includes('analyze') || input.includes('explain')) {
       intentType = 'code_analysis';
-    } else if (input.includes('什么') || input.includes('如何') || input.includes('为什么') || input.includes('?') || input.includes('？')) {
-      intentType = 'question';
+    }
+    
+    const relationships: Relationship[] = [];
+    if (observation.toolResults.length > 0) {
+      relationships.push({
+        from: 'previous_tool',
+        to: 'current_request',
+        type: 'correlation',
+        strength: 0.6,
+      });
     }
     
     return {
       intentType,
       parameters,
       confidence: 0.6,
-      patterns: [],
-      relationships: [],
-      assumptions: ['使用简单的关键词匹配进行意图分类'],
-      risks: [],
+      contextSummary: `用户输入: ${observation.userInput.slice(0, 100)}`,
+      patterns,
+      relationships,
+      assumptions: [`使用关键词匹配进行意图分类 (时间戳: ${timestamp})`],
+      risks: ['fallback 模式：LLM 解析失败，使用关键词匹配'],
     };
   }
 

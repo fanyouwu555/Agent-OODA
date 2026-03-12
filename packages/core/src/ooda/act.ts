@@ -7,12 +7,14 @@ import { getMCPService } from '../mcp/service';
 import { getPermissionManager, PermissionMode } from '../permission';
 
 export class Actor {
+  private sessionId: string;
   private toolRegistry: ToolRegistry;
   private skillRegistry = getSkillRegistry();
   private mcp = getMCPService();
   private permissionManager = getPermissionManager();
   
-  constructor(toolRegistry?: ToolRegistry) {
+  constructor(sessionId: string, toolRegistry?: ToolRegistry) {
+    this.sessionId = sessionId;
     this.toolRegistry = toolRegistry || new ToolRegistry();
   }
 
@@ -112,7 +114,7 @@ export class Actor {
       
       const result = await tool.execute(args, {
         workingDirectory: process.cwd(),
-        sessionId: 'temp-session',
+        sessionId: this.sessionId,
         maxExecutionTime: 30000,
         resources: {
           memory: 1024 * 1024 * 1024,
@@ -171,7 +173,7 @@ export class Actor {
     try {
       const skillContext: SkillContext = {
         workingDirectory: process.cwd(),
-        sessionId: 'temp-session',
+        sessionId: this.sessionId,
         maxExecutionTime: 60000,
         resources: {
           memory: 2048 * 1024 * 1024,

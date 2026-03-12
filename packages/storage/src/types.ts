@@ -3,6 +3,19 @@ export interface SessionRecord {
   createdAt: number;
   updatedAt: number;
   metadata?: Record<string, unknown>;
+  title?: string;
+  summary?: string;
+  status?: 'active' | 'archived';
+  archivedAt?: number;
+}
+
+export interface SessionSearchOptions {
+  query?: string;
+  status?: 'active' | 'archived' | 'all';
+  limit?: number;
+  offset?: number;
+  orderBy?: 'createdAt' | 'updatedAt';
+  orderDirection?: 'asc' | 'desc';
 }
 
 export interface MessageRecord {
@@ -49,11 +62,16 @@ export interface CreateMemoryInput {
 }
 
 export interface ISessionRepository {
-  create(input: { id: string; metadata?: Record<string, unknown> }): SessionRecord;
+  create(input: { id: string; metadata?: Record<string, unknown>; title?: string }): SessionRecord;
   findById(id: string): SessionRecord | null;
-  findAll(): SessionRecord[];
+  findAll(options?: SessionSearchOptions): SessionRecord[];
   update(id: string, data: Partial<SessionRecord>): boolean;
   delete(id: string): boolean;
+  archive(id: string): boolean;
+  restore(id: string): boolean;
+  search(query: string, limit?: number): SessionRecord[];
+  findByStatus(status: 'active' | 'archived'): SessionRecord[];
+  count(): number;
 }
 
 export interface IMessageRepository {
@@ -85,6 +103,7 @@ export interface IMemoryRepository {
   retrieve(id: string): MemoryRecord | null;
   search(query: string, limit?: number): MemoryRecord[];
   findByType(type: MemoryRecord['type']): MemoryRecord[];
+  findAll(limit?: number): MemoryRecord[];
   update(id: string, data: Partial<MemoryRecord>): boolean;
   delete(id: string): boolean;
   deleteLeastImportant(): boolean;

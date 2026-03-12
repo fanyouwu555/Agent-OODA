@@ -173,6 +173,7 @@ export interface Context {
   relevantFacts: string[];
   recentEvents: Message[];
   userPreferences: Record<string, unknown>;
+  contextSummary?: string;
 }
 
 export interface Constraint {

@@ -1,4 +1,3 @@
-// packages/core/src/ooda/decide.ts
 import { 
   Orientation, 
   Decision, 
@@ -11,6 +10,7 @@ import {
   IdentifiedRisk
 } from '../types';
 import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
 
 interface DecisionAnalysis {
   problemStatement: string;
@@ -19,6 +19,7 @@ interface DecisionAnalysis {
   reasoning: string;
   risks: IdentifiedRisk[];
   mitigationStrategies: string[];
+  suggestedResponse?: string;
 }
 
 export class Decider {
@@ -33,7 +34,7 @@ export class Decider {
     
     const plan = await this.createPlan(orientation, selectedOption);
     
-    const nextAction = this.selectNextAction(plan, orientation);
+    const nextAction = await this.selectNextAction(plan, orientation, analysis);
     
     const riskAssessment = this.buildRiskAssessment(analysis);
     
@@ -53,7 +54,7 @@ export class Decider {
     const prompt = this.buildDecisionPrompt(orientation);
     const response = await llmService.generate(prompt, { maxTokens: 3000 });
     
-    return this.parseDecisionResponse(response, orientation);
+    return this.parseDecisionResponse(response.text, orientation);
   }
 
   private buildDecisionPrompt(orientation: Orientation): string {
@@ -62,6 +63,7 @@ export class Decider {
     const gaps = orientation.knowledgeGaps.map(g => `- ${g.topic}: ${g.description || '需要更多信息'}`).join('\n');
     const patterns = orientation.patterns.map(p => `- ${p.description}`).join('\n');
     const risks = orientation.risks.map(r => `- ${r}`).join('\n');
+    const history = orientation.relevantContext?.recentEvents || [];
 
     return `作为OODA循环的Decide阶段，你需要基于Orient阶段的分析，生成多个可选方案并选择最佳方案。
 
@@ -115,6 +117,7 @@ ${risks || '无已识别风险'}
   ],
   "recommendedOption": "option_1",
   "reasoning": "选择该方案的详细理由",
+  "suggestedResponse": "如果这是需要直接回答的问题，在这里给出建议的回答内容",
   "risks": [
     {
       "description": "风险描述",
@@ -156,6 +159,7 @@ ${risks || '无已识别风险'}
           options,
           recommendedOption: parsed.recommendedOption || options[0].id,
           reasoning: parsed.reasoning || '基于分析选择最佳方案',
+          suggestedResponse: parsed.suggestedResponse,
           risks: parsed.risks || [],
           mitigationStrategies: parsed.mitigationStrategies || [],
         };
@@ -183,36 +187,28 @@ ${risks || '无已识别风险'}
   private createDefaultOption(orientation: Orientation): Option {
     const intent = orientation.primaryIntent;
     let approach = '';
-    let toolName = '';
     
     switch (intent.type) {
       case 'file_read':
         approach = '使用文件读取工具获取文件内容';
-        toolName = 'read_file';
         break;
       case 'file_write':
         approach = '使用文件写入工具保存内容';
-        toolName = 'write_file';
         break;
       case 'execute':
         approach = '使用命令执行工具运行命令';
-        toolName = 'run_bash';
         break;
       case 'search':
         approach = '使用搜索工具查找信息';
-        toolName = 'search_web';
         break;
       case 'code_analysis':
         approach = '分析代码并提供解释';
-        toolName = 'read_file';
         break;
       case 'question':
         approach = '直接回答用户问题';
-        toolName = '';
         break;
       default:
         approach = '根据上下文生成响应';
-        toolName = '';
     }
     
     return {
@@ -252,7 +248,7 @@ ${risks || '无已识别风险'}
     const response = await llmService.generate(prompt);
     
     try {
-      const parsed = JSON.parse(response);
+      const parsed = JSON.parse(response.text);
       if (parsed.subtasks && Array.isArray(parsed.subtasks)) {
         return parsed.subtasks.map((s: any) => ({
           id: s.id || `task_${Math.random().toString(36).substr(2, 9)}`,
@@ -368,7 +364,11 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     return { nodes, edges };
   }
 
-  private selectNextAction(plan: ActionPlan, orientation: Orientation): Action {
+  private async selectNextAction(
+    plan: ActionPlan, 
+    orientation: Orientation,
+    analysis: DecisionAnalysis
+  ): Promise<Action> {
     if (orientation.knowledgeGaps.some(g => g.importance > 0.8)) {
       const gap = orientation.knowledgeGaps.find(g => g.importance > 0.8);
       return {
@@ -378,9 +378,10 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     }
     
     if (plan.subtasks.length === 0) {
+      const response = await this.generateLLMResponse(orientation, analysis);
       return {
         type: 'response',
-        content: this.generateDefaultResponse(orientation),
+        content: response,
       };
     }
     
@@ -400,17 +401,81 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     };
   }
 
-  private generateDefaultResponse(orientation: Orientation): string {
+  private async generateLLMResponse(
+    orientation: Orientation, 
+    analysis: DecisionAnalysis
+  ): Promise<string> {
+    if (analysis.suggestedResponse && analysis.suggestedResponse.length > 20) {
+      return analysis.suggestedResponse;
+    }
+    
+    const llmService = await this.getLLM();
     const intent = orientation.primaryIntent;
     
-    switch (intent.type) {
-      case 'question':
-        return '我理解您的问题，让我为您解答。';
-      case 'general':
-        return '我已理解您的请求，请问还有什么需要帮助的吗？';
-      default:
-        return '我已分析您的请求，准备执行相应操作。';
+    const history: ChatMessage[] = [];
+    if (orientation.relevantContext?.recentEvents) {
+      for (const event of orientation.relevantContext.recentEvents.slice(-5)) {
+        if (event.role === 'user' || event.role === 'assistant') {
+          history.push({
+            role: event.role,
+            content: event.content || '',
+          });
+        }
+      }
     }
+    
+    const systemPrompt = this.buildResponseSystemPrompt(orientation);
+    const userPrompt = this.buildResponseUserPrompt(orientation, analysis);
+    
+    const result = await llmService.generate(userPrompt, {
+      systemPrompt,
+      history,
+      maxTokens: 1500,
+    });
+    
+    return result.text || '我理解您的请求，但暂时无法给出详细回答。';
+  }
+
+  private buildResponseSystemPrompt(orientation: Orientation): string {
+    const intent = orientation.primaryIntent;
+    
+    return `你是一个智能助手，正在帮助用户解决问题。
+
+当前任务类型: ${intent.type}
+任务描述: ${orientation.primaryIntent.rawInput || '用户请求'}
+
+请根据以下原则回答:
+1. 直接回应用户的问题或请求
+2. 提供准确、有帮助的信息
+3. 如果需要执行操作，说明将要执行的操作
+4. 保持回答简洁明了
+5. 如果信息不足，礼貌地请求更多信息`;
+  }
+
+  private buildResponseUserPrompt(
+    orientation: Orientation, 
+    analysis: DecisionAnalysis
+  ): string {
+    const intent = orientation.primaryIntent;
+    const selectedOption = analysis.options.find(o => o.id === analysis.recommendedOption) || analysis.options[0];
+    
+    let prompt = `用户输入: ${intent.rawInput || '无'}\n\n`;
+    prompt += `分析结果:\n`;
+    prompt += `- 意图类型: ${intent.type}\n`;
+    prompt += `- 问题陈述: ${analysis.problemStatement}\n`;
+    prompt += `- 推荐方案: ${selectedOption?.description || '直接回答'}\n`;
+    prompt += `- 决策理由: ${analysis.reasoning}\n`;
+    
+    if (orientation.constraints.length > 0) {
+      prompt += `\n约束条件:\n`;
+      orientation.constraints.forEach(c => {
+        prompt += `- ${c.description}\n`;
+      });
+    }
+    
+    prompt += `\n请直接回答用户的问题或请求，不要输出JSON格式。`;
+    
+    return prompt;
   }
 
   private buildRiskAssessment(analysis: DecisionAnalysis): RiskAssessment {

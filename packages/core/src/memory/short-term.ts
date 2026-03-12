@@ -22,6 +22,10 @@ export class ShortTermMemory {
     return this.messages.slice(-count);
   }
   
+  getRecentMessages(count: number = 10): Message[] {
+    return this.messages.slice(-count);
+  }
+  
   clear(): void {
     this.messages = [];
   }

@@ -1,0 +1,24 @@
+初始化 SQL.js...
+数据库路径: D:\AOpenCode\CustomAgent\AgentProject\packages\server\data\ooda-agent.db
+文件存在: true
+
+=== 测试清理功能 ===
+当前会话数: 17
+当前消息数: 76
+当前工具调用数: 143
+
+最近会话列表:
+  - session-1773285299672-c3e3jwcy9 | (无标题) | active
+  - session-1773285132010-70yz617uy | (无标题) | active
+  - session-1773278258583-mqwj2z108 | (无标题) | active
+  - session-1773244978896-4zlviye6b | (无标题) | active
+  - session-1773244799037-cvw8mc1ma | (无标题) | active
+  - session-1773244715602-tc2mik13h | (无标题) | active
+  - session-1773244608940-wmhi5ogkv | (无标题) | active
+  - session-1773244516464-r57doz96f | (无标题) | active
+  - session-1773240735091-l0culcg8s | (无标题) | active
+  - session-1773240299387-7uyfp2hi7 | (无标题) | active
+
+已归档会话数: 0
+
+测试完成!

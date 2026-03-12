@@ -11,13 +11,16 @@
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {
-    "hono": "^4.0.0",
-    "ws": "^8.16.0",
     "@ooda-agent/core": "file:../core",
+    "@ooda-agent/storage": "file:../storage",
     "@ooda-agent/tools": "file:../tools",
-    "@ooda-agent/storage": "file:../storage"
+    "dotenv": "^17.3.1",
+    "hono": "^4.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.11.30",
     "@types/ws": "^8.5.10",
     "tsx": "^4.7.0",

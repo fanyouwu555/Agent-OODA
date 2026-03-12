@@ -1,12 +1,18 @@
-import type { DatabaseManager } from '../database';
-import type { SessionRecord, MessageRecord, ToolCallRecord, MemoryRecord, CreateMemoryInput } from '../types';
+import type { DatabaseManager } from '../database.js';
+import type { SessionRecord, MessageRecord, ToolCallRecord, MemoryRecord, CreateMemoryInput } from '../types.js';
 
 interface SessionRow {
   id: string;
   created_at: number;
   updated_at: number;
   metadata: string | null;
+  title: string | null;
+  summary: string | null;
+  status: string | null;
+  archived_at: number | null;
 }
+
+
 
 interface MessageRow {
   id: string;
@@ -48,13 +54,13 @@ export class SessionRepository {
     this.db = db;
   }
 
-  create(input: { id: string; metadata?: Record<string, unknown> }): SessionRecord {
+  create(input: { id: string; metadata?: Record<string, unknown>; title?: string }): SessionRecord {
     const now = Date.now();
-    this.db.run(
-      'INSERT INTO sessions (id, created_at, updated_at, metadata) VALUES (?, ?, ?, ?)',
-      [input.id, now, now, input.metadata ? JSON.stringify(input.metadata) : null]
+    this.db.runImmediate(
+      'INSERT INTO sessions (id, created_at, updated_at, metadata, title, status) VALUES (?, ?, ?, ?, ?, ?)',
+      [input.id, now, now, input.metadata ? JSON.stringify(input.metadata) : null, input.title || null, 'active']
     );
-    return { id: input.id, createdAt: now, updatedAt: now, metadata: input.metadata };
+    return { id: input.id, createdAt: now, updatedAt: now, metadata: input.metadata, title: input.title, status: 'active' };
   }
 
   findById(id: string): SessionRecord | null {
@@ -65,6 +71,10 @@ export class SessionRepository {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+        title: row.title || undefined,
+        summary: row.summary || undefined,
+        status: (row.status as 'active' | 'archived') || undefined,
+        archivedAt: row.archived_at ?? undefined,
       };
     }
     return null;
@@ -77,6 +87,10 @@ export class SessionRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      title: row.title || undefined,
+      summary: row.summary || undefined,
+      status: (row.status as 'active' | 'archived') || undefined,
+      archivedAt: row.archived_at ?? undefined,
     }));
   }
 
@@ -87,6 +101,22 @@ export class SessionRepository {
     if (data.metadata !== undefined) {
       fields.push('metadata = ?');
       values.push(JSON.stringify(data.metadata));
+    }
+    if (data.title !== undefined) {
+      fields.push('title = ?');
+      values.push(data.title);
+    }
+    if (data.summary !== undefined) {
+      fields.push('summary = ?');
+      values.push(data.summary);
+    }
+    if (data.status !== undefined) {
+      fields.push('status = ?');
+      values.push(data.status);
+    }
+    if (data.archivedAt !== undefined) {
+      fields.push('archived_at = ?');
+      values.push(Date.now());
     }
 
     if (fields.length === 0) return false;
@@ -104,6 +134,120 @@ export class SessionRepository {
   delete(id: string): boolean {
     this.db.run('DELETE FROM sessions WHERE id = ?', [id]);
     return true;
+  }
+
+  archive(id: string): boolean {
+    const now = Date.now();
+    this.db.run(
+      'UPDATE sessions SET status = ?, archived_at = ? WHERE id = ?',
+      ['archived', now, id]
+    );
+    return true;
+  }
+
+  restore(id: string): boolean {
+    this.db.run(
+      'UPDATE sessions SET status = ?, archived_at = NULL WHERE id = ?',
+      ['active', id]
+    );
+    return true;
+  }
+
+  search(query: string, limit: number = 10): SessionRecord[] {
+    const rows = this.db.all(
+      'SELECT * FROM sessions WHERE title LIKE ? OR summary LIKE ? ORDER BY created_at DESC LIMIT ?',
+      [`%${query}%`, `%${query}%`, limit]
+    ) as SessionRow[];
+    return rows.map((row: SessionRow) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      title: row.title || undefined,
+      summary: row.summary || undefined,
+      status: (row.status as 'active' | 'archived') || undefined,
+      archivedAt: row.archived_at ?? undefined,
+    }));
+  }
+
+  findByStatus(status: 'active' | 'archived'): SessionRecord[] {
+    const rows = this.db.all(
+      'SELECT * FROM sessions WHERE status = ? ORDER BY created_at DESC',
+      [status]
+    ) as SessionRow[];
+    return rows.map((row: SessionRow) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      title: row.title || undefined,
+      summary: row.summary || undefined,
+      status: (row.status as 'active' | 'archived') || undefined,
+      archivedAt: row.archived_at ?? undefined,
+    }));
+  }
+
+  count(): number {
+    const row = this.db.get('SELECT COUNT(*) as count FROM sessions') as { count: number } | undefined;
+    return row?.count || 0;
+  }
+
+  deleteAll(): number {
+    const result = this.db.run('DELETE FROM sessions');
+    return result.changes || 0;
+  }
+
+  deleteByStatus(status: 'active' | 'archived'): number {
+    const result = this.db.run('DELETE FROM sessions WHERE status = ?', [status]);
+    return result.changes || 0;
+  }
+
+  deleteOlderThan(days: number): number {
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const result = this.db.run('DELETE FROM sessions WHERE created_at < ?', [cutoff]);
+    return result.changes || 0;
+  }
+
+  deleteArchivedOlderThan(days: number): number {
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const result = this.db.run('DELETE FROM sessions WHERE status = ? AND archived_at < ?', ['archived', cutoff]);
+    return result.changes || 0;
+  }
+
+  findAllWithMessageCount(status?: 'active' | 'archived'): Array<SessionRecord & { messageCount: number; lastMessageAt: number | null; firstMessageContent?: string }> {
+    let sql = `
+      SELECT 
+        s.*,
+        COUNT(m.id) as message_count,
+        MAX(m.timestamp) as last_message_at,
+        (SELECT content FROM messages WHERE session_id = s.id AND role = 'user' ORDER BY timestamp ASC LIMIT 1) as first_message_content
+      FROM sessions s
+      LEFT JOIN messages m ON s.id = m.session_id
+    `;
+    
+    const params: unknown[] = [];
+    if (status) {
+      sql += ' WHERE s.status = ?';
+      params.push(status);
+    }
+    
+    sql += ' GROUP BY s.id ORDER BY s.created_at DESC';
+    
+    const rows = this.db.all(sql, params) as (SessionRow & { message_count: number; last_message_at: number | null; first_message_content: string | null })[];
+    
+    return rows.map((row) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      title: row.title || undefined,
+      summary: row.summary || undefined,
+      status: (row.status as 'active' | 'archived') || undefined,
+      archivedAt: row.archived_at ?? undefined,
+      messageCount: row.message_count,
+      lastMessageAt: row.last_message_at,
+      firstMessageContent: row.first_message_content || undefined,
+    }));
   }
 }
 
@@ -146,6 +290,16 @@ export class MessageRepository {
   deleteBySessionId(sessionId: string): boolean {
     this.db.run('DELETE FROM messages WHERE session_id = ?', [sessionId]);
     return true;
+  }
+
+  deleteAll(): number {
+    const result = this.db.run('DELETE FROM messages');
+    return result.changes || 0;
+  }
+
+  count(): number {
+    const row = this.db.get('SELECT COUNT(*) as count FROM messages') as { count: number } | undefined;
+    return row?.count || 0;
   }
 
   private mapRow(row: MessageRow): MessageRecord {
@@ -245,6 +399,16 @@ export class ToolCallRepository {
     return true;
   }
 
+  deleteAll(): number {
+    const result = this.db.run('DELETE FROM tool_calls');
+    return result.changes || 0;
+  }
+
+  count(): number {
+    const row = this.db.get('SELECT COUNT(*) as count FROM tool_calls') as { count: number } | undefined;
+    return row?.count || 0;
+  }
+
   private mapRow(row: ToolCallRow): ToolCallRecord {
     return {
       id: row.id,
@@ -310,6 +474,15 @@ export class MemoryRepository {
       'SELECT * FROM long_term_memories WHERE type = ? ORDER BY importance DESC',
       [type]
     ) as MemoryRow[];
+    return rows.map((row: MemoryRow) => this.mapRow(row));
+  }
+
+  findAll(limit?: number): MemoryRecord[] {
+    let sql = 'SELECT * FROM long_term_memories ORDER BY importance DESC, last_accessed DESC';
+    if (limit) {
+      sql += ` LIMIT ${limit}`;
+    }
+    const rows = this.db.all(sql) as MemoryRow[];
     return rows.map((row: MemoryRow) => this.mapRow(row));
   }
 

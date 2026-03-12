@@ -1,4 +1,4 @@
-import { LLMProvider, createLLMProvider, LLMProviderConfig } from './provider';
+import { LLMProvider, createLLMProvider, LLMProviderConfig, GenerateOptions, GenerateResult, ChatMessage } from './provider';
 import { getConfigManager } from '../config';
 
 export class LLMService {
@@ -19,12 +19,15 @@ export class LLMService {
     }
   }
   
-  async generate(prompt: string, options?: any): Promise<string> {
-    const result = await this.provider.generate(prompt, options);
-    return result.text;
+  async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult> {
+    return this.provider.generate(prompt, options);
   }
   
-  async *stream(prompt: string, options?: any): AsyncGenerator<string> {
+  async chat(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult> {
+    return this.provider.chat(messages, options);
+  }
+  
+  async *stream(prompt: string, options?: GenerateOptions): AsyncGenerator<string> {
     for await (const token of this.provider.stream(prompt, options)) {
       yield token;
     }

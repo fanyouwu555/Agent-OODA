@@ -1,5 +1,5 @@
-import { DatabaseManager } from './database';
-import { SessionRepository, MessageRepository, ToolCallRepository, MemoryRepository } from './repositories';
+import { DatabaseManager } from './database.js';
+import { SessionRepository, MessageRepository, ToolCallRepository, MemoryRepository } from './repositories/index.js';
 export type {
   SessionRecord,
   MessageRecord,
@@ -10,7 +10,9 @@ export type {
   IMessageRepository,
   IToolCallRepository,
   IMemoryRepository,
-} from './types';
+} from './types.js';
+
+export { SessionRepository, MessageRepository, ToolCallRepository, MemoryRepository };
 
 export async function createStorage(dbPath: string) {
   const manager = new DatabaseManager(dbPath);

@@ -1,4 +1,10 @@
-import type { Message, Skill, Session, SSEEvent, ApiResponse, ModelsResponse, ModelInfo, SwitchModelRequest } from '../types';
+import type { 
+  Message, Skill, Session, SessionListItem, SSEEvent, ApiResponse, 
+  ModelsResponse, ModelInfo, SwitchModelRequest,
+  AgentConfig, AgentInstance, AgentsResponse,
+  UnifiedTool, ToolGroup, ToolsResponse,
+  EnhancedPermissionConfig, PermissionResponse, PermissionMode
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -131,6 +137,143 @@ export class ApiClient {
 
   async getActiveModel(): Promise<ApiResponse<ModelInfo>> {
     return this.request<ModelInfo>('/models/active');
+  }
+
+  async getSessions(status?: 'active' | 'archived'): Promise<ApiResponse<SessionListItem[]>> {
+    const query = status ? `?status=${status}` : '';
+    return this.request<SessionListItem[]>(`/sessions${query}`);
+  }
+
+  async searchSessions(query: string): Promise<ApiResponse<SessionListItem[]>> {
+    return this.request<SessionListItem[]>(`/sessions/search?q=${encodeURIComponent(query)}`);
+  }
+
+  async archiveSession(sessionId: string): Promise<ApiResponse<{ success: boolean; status: string }>> {
+    return this.request<{ success: boolean; status: string }>(`/session/${sessionId}/archive`, {
+      method: 'PATCH',
+    });
+  }
+
+  async restoreSession(sessionId: string): Promise<ApiResponse<{ success: boolean; status: string }>> {
+    return this.request<{ success: boolean; status: string }>(`/session/${sessionId}/restore`, {
+      method: 'PATCH',
+    });
+  }
+
+  async updateSessionTitle(sessionId: string, title: string): Promise<ApiResponse<{ success: boolean; title: string }>> {
+    return this.request<{ success: boolean; title: string }>(`/session/${sessionId}/title`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+  }
+
+  async deleteSession(sessionId: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/session/${sessionId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getSessionsCount(): Promise<ApiResponse<{ count: number }>> {
+    return this.request<{ count: number }>('/sessions/count');
+  }
+
+  async clearAllSessions(): Promise<ApiResponse<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number } }>> {
+    return this.request<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number } }>('/sessions', {
+      method: 'DELETE',
+    });
+  }
+
+  async clearArchivedSessions(): Promise<ApiResponse<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number } }>> {
+    return this.request<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number } }>('/sessions/archived', {
+      method: 'DELETE',
+    });
+  }
+
+  async clearOldSessions(days: number): Promise<ApiResponse<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number }; cutoffDate: string }>> {
+    return this.request<{ success: boolean; deleted: { sessions: number; messages: number; toolCalls: number }; cutoffDate: string }>(`/sessions/old?days=${days}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getAgents(): Promise<ApiResponse<AgentsResponse>> {
+    return this.request<AgentsResponse>('/agents');
+  }
+
+  async getAgent(name: string): Promise<ApiResponse<AgentInstance>> {
+    return this.request<AgentInstance>(`/agents/${name}`);
+  }
+
+  async createAgent(config: AgentConfig): Promise<ApiResponse<AgentInstance>> {
+    return this.request<AgentInstance>('/agents', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async updateAgent(name: string, config: Partial<AgentConfig>): Promise<ApiResponse<AgentInstance>> {
+    return this.request<AgentInstance>(`/agents/${name}`, {
+      method: 'PATCH',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async deleteAgent(name: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/agents/${name}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async enableAgent(name: string): Promise<ApiResponse<AgentInstance>> {
+    return this.request<AgentInstance>(`/agents/${name}/enable`, {
+      method: 'POST',
+    });
+  }
+
+  async disableAgent(name: string): Promise<ApiResponse<AgentInstance>> {
+    return this.request<AgentInstance>(`/agents/${name}/disable`, {
+      method: 'POST',
+    });
+  }
+
+  async setDefaultAgent(name: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/agents/default`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async getTools(): Promise<ApiResponse<ToolsResponse>> {
+    return this.request<ToolsResponse>('/tools');
+  }
+
+  async getTool(name: string): Promise<ApiResponse<UnifiedTool>> {
+    return this.request<UnifiedTool>(`/tools/${name}`);
+  }
+
+  async getToolGroups(): Promise<ApiResponse<ToolGroup[]>> {
+    return this.request<ToolGroup[]>('/tools/groups');
+  }
+
+  async getPermissions(): Promise<ApiResponse<PermissionResponse>> {
+    return this.request<PermissionResponse>('/permissions');
+  }
+
+  async updateGlobalPermission(tool: string, mode: PermissionMode): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request<{ success: boolean }>('/permissions/global', {
+      method: 'PATCH',
+      body: JSON.stringify({ tool, mode }),
+    });
+  }
+
+  async updateAgentPermission(
+    agent: string,
+    tool: string,
+    mode: PermissionMode
+  ): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/permissions/agents/${agent}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tool, mode }),
+    });
   }
 }
 

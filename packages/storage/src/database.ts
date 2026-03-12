@@ -7,7 +7,28 @@ CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  metadata TEXT
+  metadata TEXT,
+  title TEXT,
+  summary TEXT,
+  status TEXT DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+  archived_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS session_tags (
+  session_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, tag),
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS session_metadata (
+  session_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, key),
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -51,6 +72,9 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id);
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON long_term_memories(importance);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON long_term_memories(type);
 CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON long_term_memories(last_accessed);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
+CREATE INDEX IF NOT EXISTS idx_sessions_summary ON sessions(summary);
 `;
 
 export class DatabaseManager {
@@ -58,9 +82,30 @@ export class DatabaseManager {
   private SQL: SqlJsStatic | null = null;
   private dbPath: string;
   private initialized = false;
+  private pendingWrites: Array<{ sql: string; params: any[] }> = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+  private autoSave: boolean = true;
+  private flushIntervalMs: number = 5000;
+  private maxPendingWrites: number = 100;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
+  }
+
+  private startFlushTimer(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+    }
+    this.flushTimer = setInterval(() => {
+      this.flush();
+    }, this.flushIntervalMs);
+  }
+
+  private stopFlushTimer(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
   }
 
   async initialize(): Promise<void> {
@@ -81,6 +126,33 @@ export class DatabaseManager {
     }
 
     this.db.run(INIT_SQL);
+    
+    // 迁移：为旧数据库添加新列
+    try {
+      const columns = this.db.exec("PRAGMA table_info(sessions)");
+      if (columns.length > 0) {
+        const columnNames = columns[0].values.map((col: any) => col[1]);
+        if (!columnNames.includes('title')) {
+          this.db.run('ALTER TABLE sessions ADD COLUMN title TEXT');
+        }
+        if (!columnNames.includes('summary')) {
+          this.db.run('ALTER TABLE sessions ADD COLUMN summary TEXT');
+        }
+        if (!columnNames.includes('status')) {
+          this.db.run("ALTER TABLE sessions ADD COLUMN status TEXT DEFAULT 'active'");
+        }
+        if (!columnNames.includes('archived_at')) {
+          this.db.run('ALTER TABLE sessions ADD COLUMN archived_at INTEGER');
+        }
+      }
+    } catch (e) {
+      console.log('[Storage] Migration check skipped:', (e as Error).message);
+    }
+    
+    this.save();
+    
+    this.startFlushTimer();
+    
     this.initialized = true;
     console.log(`[Storage] Database initialized at ${this.dbPath}`);
   }
@@ -98,6 +170,8 @@ export class DatabaseManager {
   }
 
   close(): void {
+    this.stopFlushTimer();
+    this.flush();
     this.save();
     if (this.db) {
       this.db.close();
@@ -107,10 +181,52 @@ export class DatabaseManager {
     }
   }
 
-  run(sql: string, params: any[] = []): void {
+  run(sql: string, params: any[] = []): { changes: number } {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    if (this.autoSave) {
+      this.pendingWrites.push({ sql, params });
+      
+      if (this.pendingWrites.length >= this.maxPendingWrites) {
+        this.flush();
+      }
+      return { changes: 0 };
+    } else {
+      this.db.run(sql, params);
+      const changes = this.db.getRowsModified();
+      return { changes };
+    }
+  }
+
+  runImmediate(sql: string, params: any[] = []): { changes: number } {
     if (!this.db) throw new Error('Database not initialized');
     this.db.run(sql, params);
     this.save();
+    const changes = this.db.getRowsModified();
+    return { changes };
+  }
+
+  flush(): void {
+    if (!this.db || this.pendingWrites.length === 0) return;
+    
+    const writes = [...this.pendingWrites];
+    this.pendingWrites = [];
+    
+    try {
+      this.db.run('BEGIN TRANSACTION');
+      
+      for (const { sql, params } of writes) {
+        this.db.run(sql, params);
+      }
+      
+      this.db.run('COMMIT');
+      this.save();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      console.error('[Storage] Batch write failed:', error);
+      this.pendingWrites = [...writes, ...this.pendingWrites];
+      throw error;
+    }
   }
 
   get(sql: string, params: any[] = []): any | undefined {

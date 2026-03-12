@@ -10,6 +10,7 @@ export interface WebSocketClientOptions {
   reconnect?: boolean;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  heartbeatInterval?: number;
 }
 
 export function createWebSocketClient(options: WebSocketClientOptions) {
@@ -19,6 +20,26 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
   let ws: WebSocket | null = null;
   let reconnectAttempts = 0;
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  const startHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
+    const interval = options.heartbeatInterval || 25000;
+    heartbeatTimer = setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, interval);
+  };
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
 
   const connect = () => {
     if (ws?.readyState === WebSocket.OPEN) return;
@@ -33,13 +54,19 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
         console.log('[WebSocket] Connected');
         setIsConnected(true);
         reconnectAttempts = 0;
+        startHeartbeat();
         options.onOpen?.();
       };
 
       ws.onclose = () => {
         console.log('[WebSocket] Disconnected');
+        const wasConnected = isConnected();
         setIsConnected(false);
-        options.onClose?.();
+        stopHeartbeat();
+        
+        if (wasConnected) {
+          options.onClose?.();
+        }
 
         if (options.reconnect && reconnectAttempts < (options.maxReconnectAttempts || 5)) {
           reconnectAttempts++;
@@ -56,6 +83,9 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
       ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
+          if (message.type === 'pong') {
+            return;
+          }
           setLastMessage(message);
           options.onMessage?.(message);
         } catch (e) {
@@ -68,6 +98,7 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
   };
 
   const disconnect = () => {
+    stopHeartbeat();
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
     }

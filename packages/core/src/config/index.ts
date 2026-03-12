@@ -2,6 +2,34 @@
 import { PermissionConfig, PermissionMode } from '../permission';
 import { LLMProviderConfig } from '../llm/provider';
 
+function resolveEnvVars(value: string): string {
+  return value.replace(/\$\{([^}]+)\}/g, (_, envVar) => {
+    const envValue = process.env[envVar];
+    if (!envValue) {
+      console.warn(`[Config] Environment variable ${envVar} is not set`);
+      return '';
+    }
+    return envValue;
+  });
+}
+
+function resolveConfigEnvVars(obj: unknown): unknown {
+  if (typeof obj === 'string') {
+    return resolveEnvVars(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(resolveConfigEnvVars);
+  }
+  if (obj && typeof obj === 'object') {
+    const resolved: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      resolved[key] = resolveConfigEnvVars(value);
+    }
+    return resolved;
+  }
+  return obj;
+}
+
 export interface AgentModelConfig {
   name: string;
   temperature?: number;
@@ -82,6 +110,19 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
     'edit': PermissionMode.ASK,
     'bash': PermissionMode.ASK,
     'webfetch': PermissionMode.ASK,
+    'web_search': PermissionMode.ASK,
+    'web_fetch': PermissionMode.ASK,
+    'get_time': PermissionMode.ALLOW,
+    'calculator': PermissionMode.ALLOW,
+    'weather': PermissionMode.ASK,
+    'translate': PermissionMode.ASK,
+    'timer': PermissionMode.ALLOW,
+    'currency': PermissionMode.ASK,
+    'uuid': PermissionMode.ALLOW,
+    'base64': PermissionMode.ALLOW,
+    'hash': PermissionMode.ALLOW,
+    'random_number': PermissionMode.ALLOW,
+    'color': PermissionMode.ALLOW,
     'question': PermissionMode.ALLOW,
     'todowrite': PermissionMode.ALLOW,
     'todoread': PermissionMode.ALLOW
@@ -94,7 +135,7 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
         name: 'build',
         description: '构建agent，用于代码编写',
         systemPrompt: '你是一个专业的代码编写助手，擅长编写高质量、可维护的代码。',
-        tools: ['read', 'write', 'edit', 'bash', 'grep', 'glob', 'list'],
+        tools: ['read', 'write', 'edit', 'bash', 'grep', 'glob', 'list', 'web_search', 'web_fetch', 'get_time', 'calculator', 'uuid', 'base64', 'hash'],
         model: {
           name: 'qwen3:8b',
           temperature: 0.7,
@@ -106,7 +147,7 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
         name: 'plan',
         description: '规划agent，用于任务规划',
         systemPrompt: '你是一个任务规划专家，擅长分析需求并制定详细的执行计划。',
-        tools: ['read', 'grep', 'glob', 'list'],
+        tools: ['read', 'grep', 'glob', 'list', 'web_search', 'get_time', 'calculator', 'timer'],
         model: {
           name: 'qwen3:8b',
           temperature: 0.5,
@@ -118,7 +159,7 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
         name: 'general',
         description: '通用agent，用于一般任务',
         systemPrompt: '你是一个通用的AI助手，可以处理各种任务。',
-        tools: ['read', 'write', 'edit', 'bash', 'grep', 'glob', 'list', 'webfetch'],
+        tools: ['read', 'write', 'edit', 'bash', 'grep', 'glob', 'list', 'web_search', 'web_fetch', 'webfetch', 'get_time', 'calculator', 'weather', 'translate', 'timer', 'currency', 'uuid', 'base64', 'hash', 'random_number', 'color'],
         model: {
           name: 'qwen3:8b',
           temperature: 0.7,
@@ -130,7 +171,7 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
         name: 'explore',
         description: '探索agent，用于代码探索',
         systemPrompt: '你是一个代码探索专家，擅长分析代码结构和理解项目。',
-        tools: ['read', 'grep', 'glob', 'list'],
+        tools: ['read', 'grep', 'glob', 'list', 'web_search', 'get_time'],
         model: {
           name: 'qwen3:8b',
           temperature: 0.6,
@@ -150,7 +191,7 @@ export class ConfigManager {
   private config: OODAAgentConfig;
   
   constructor(config: OODAAgentConfig = DEFAULT_CONFIG) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = resolveConfigEnvVars({ ...DEFAULT_CONFIG, ...config }) as OODAAgentConfig;
   }
   
   getConfig(): OODAAgentConfig {

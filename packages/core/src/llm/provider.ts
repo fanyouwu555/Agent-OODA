@@ -10,13 +10,24 @@ export interface LLMProvider {
   maxTokens: number;
   
   generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult>;
+  chat(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult>;
   stream(prompt: string, options?: StreamOptions): AsyncGenerator<string>;
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  name?: string;
+  toolCallId?: string;
 }
 
 export interface GenerateOptions {
   temperature?: number;
   maxTokens?: number;
   stop?: string[];
+  timeout?: number;
+  systemPrompt?: string;
+  history?: ChatMessage[];
 }
 
 export interface StreamOptions extends GenerateOptions {
@@ -34,6 +45,7 @@ export class LocalModelProvider implements LLMProvider {
   model: string;
   temperature: number;
   maxTokens: number;
+  private callCount = 0;
   
   constructor(config: {
     model: string;
@@ -59,6 +71,22 @@ export class LocalModelProvider implements LLMProvider {
     };
   }
   
+  async chat(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult> {
+    const startTime = Date.now();
+    
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    const prompt = lastUserMessage?.content || '';
+    const response = await this.simulateLocalModel(prompt, options);
+    
+    const endTime = Date.now();
+    
+    return {
+      text: response,
+      tokens: response.length / 4,
+      time: endTime - startTime,
+    };
+  }
+  
   async *stream(prompt: string, options?: StreamOptions): AsyncGenerator<string> {
     const response = await this.generate(prompt, options);
     
@@ -72,19 +100,60 @@ export class LocalModelProvider implements LLMProvider {
   }
   
   private async simulateLocalModel(prompt: string, options?: GenerateOptions): Promise<string> {
-    const responses: Record<string, string> = {
-      '读取文件': '我需要使用read_file工具来读取文件内容',
-      '搜索': '我需要使用search_web工具来搜索相关信息',
-      '运行命令': '我需要使用run_bash工具来执行命令',
-    };
+    this.callCount++;
     
-    for (const [key, value] of Object.entries(responses)) {
-      if (prompt.includes(key)) {
-        return value;
-      }
+    const timestamp = Date.now();
+    const randomFactor = Math.random().toString(36).substring(7);
+    
+    if (prompt.includes('意图') || prompt.includes('intent')) {
+      return JSON.stringify({
+        intentType: 'question',
+        parameters: { query: prompt.substring(0, 100) },
+        confidence: 0.7 + Math.random() * 0.3,
+        patterns: [],
+        relationships: [],
+        assumptions: ['使用本地模拟模型'],
+        risks: [],
+        _meta: { callId: this.callCount, timestamp, randomFactor }
+      });
     }
     
-    return '我需要思考如何处理这个请求...';
+    if (prompt.includes('决策') || prompt.includes('decision') || prompt.includes('方案')) {
+      return JSON.stringify({
+        problemStatement: `处理用户请求 (调用 #${this.callCount})`,
+        options: [
+          {
+            id: 'option_1',
+            description: '直接回答用户问题',
+            approach: '基于已有知识提供回答',
+            pros: ['快速响应', '无需外部工具'],
+            cons: ['可能信息有限'],
+            estimatedComplexity: 'low',
+            estimatedImpact: 'medium',
+            riskLevel: 'low',
+            score: 0.75 + Math.random() * 0.2
+          }
+        ],
+        recommendedOption: 'option_1',
+        reasoning: `基于当前上下文分析，建议直接回答用户问题。时间戳: ${timestamp}`,
+        risks: [],
+        mitigationStrategies: [],
+        _meta: { callId: this.callCount, timestamp, randomFactor }
+      });
+    }
+    
+    if (prompt.includes('分解') || prompt.includes('subtask')) {
+      return JSON.stringify({
+        subtasks: [],
+        _meta: { callId: this.callCount, timestamp, randomFactor }
+      });
+    }
+    
+    return JSON.stringify({
+      response: `本地模型响应 #${this.callCount} (时间: ${new Date(timestamp).toISOString()})`,
+      prompt: prompt.substring(0, 200),
+      _meta: { callId: this.callCount, timestamp, randomFactor }
+    });
   }
 }
 

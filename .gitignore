@@ -11,6 +11,13 @@ package-lock.json
 .env
 .env.local
 
+# Sensitive configuration files
+config/local-model.json
+config/*-local.json
+config/*-private.json
+*.pem
+*.key
+
 # IDE
 .vscode/
 .idea/

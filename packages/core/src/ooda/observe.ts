@@ -1,6 +1,6 @@
 // packages/core/src/ooda/observe.ts
 import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, Anomaly, Pattern } from '../types';
-import { getMemory } from '../memory';
+import { getSessionMemory, SessionMemory } from '../memory';
 
 interface ToolResultData {
   toolName?: string;
@@ -9,31 +9,87 @@ interface ToolResultData {
   executionTime?: number;
 }
 
+interface ObserverState {
+  lastStoredCount: number;
+}
+
+class ObserverStateManager {
+  private states: Map<string, ObserverState> = new Map();
+  
+  getState(sessionId: string): ObserverState {
+    if (!this.states.has(sessionId)) {
+      this.states.set(sessionId, {
+        lastStoredCount: 0,
+      });
+    }
+    return this.states.get(sessionId)!;
+  }
+  
+  resetState(sessionId: string): void {
+    this.states.set(sessionId, {
+      lastStoredCount: 0,
+    });
+  }
+  
+  initLastStoredCount(sessionId: string, count: number): void {
+    const state = this.getState(sessionId);
+    state.lastStoredCount = count;
+  }
+  
+  clearState(sessionId: string): void {
+    this.states.delete(sessionId);
+  }
+}
+
+const observerStateManager = new ObserverStateManager();
+
+export function resetObserverState(sessionId: string): void {
+  observerStateManager.resetState(sessionId);
+}
+
+export function initObserverLastStoredCount(sessionId: string, count: number): void {
+  observerStateManager.initLastStoredCount(sessionId, count);
+}
+
 export class Observer {
-  private memory = getMemory();
+  private sessionId: string;
+  private sessionMemory: SessionMemory;
+  private state: ObserverState;
+  
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+    this.sessionMemory = getSessionMemory(sessionId);
+    this.state = observerStateManager.getState(sessionId);
+  }
   
   async observe(state: AgentState): Promise<Observation> {
-    this.storeToMemory(state);
+    await this.storeToMemory(state);
     
     const toolResults = this.extractToolResults(state);
     const anomalies = this.detectAnomalies(state, toolResults);
     const patterns = this.recognizePatterns(state, toolResults);
     
+    const allHistory = this.sessionMemory.getShortTerm().getRecentMessages(100);
+    
     return {
       userInput: state.originalInput,
       toolResults,
-      context: this.buildContext(state),
+      context: await this.buildContext(state),
       environment: await this.getEnvironmentState(),
-      history: state.history.slice(-10),
+      history: allHistory.length > 0 ? allHistory : state.history,
       anomalies,
       patterns,
     };
   }
 
-  private storeToMemory(state: AgentState): void {
-    for (const message of state.history) {
-      this.memory.getShortTerm().storeMessage(message);
+  private async storeToMemory(state: AgentState): Promise<void> {
+    const newMessages = state.history.slice(this.state.lastStoredCount);
+    
+    for (const message of newMessages) {
+      this.sessionMemory.getShortTerm().storeMessage(message);
     }
+    
+    this.state.lastStoredCount = state.history.length;
     
     if (state.history.length > 0) {
       const lastMessage = state.history[state.history.length - 1];
@@ -41,17 +97,11 @@ export class Observer {
         for (const part of lastMessage.parts) {
           if (part.type === 'tool_result' && !part.isError) {
             const resultData = part.result as ToolResultData;
-            this.memory.getLongTerm().store({
-              content: JSON.stringify(part.result),
-              embedding: [],
-              metadata: {
-                type: 'experience',
-                source: 'tool_result',
-                tags: ['tool', resultData.toolName || 'unknown'],
-                related: [],
-              },
-              importance: 0.7,
-            });
+            await this.sessionMemory.storeExperience(
+              JSON.stringify(part.result),
+              ['tool', resultData.toolName || 'unknown'],
+              0.7
+            );
           }
         }
       }
@@ -307,18 +357,23 @@ export class Observer {
     return null;
   }
 
-  private buildContext(state: AgentState) {
-    const recentMessages = this.memory.getShortTerm().getRecentMessages(5);
+  private async buildContext(state: AgentState) {
+    const recentMessages = this.sessionMemory.getShortTerm().getRecentMessages(5);
+    console.log(`[Observer] buildContext: sessionMemory has ${recentMessages.length} recent messages`);
+    recentMessages.forEach((msg, i) => {
+      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      console.log(`  [${i}] ${msg.role}: ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}`);
+    });
     
     return {
-      relevantFacts: this.getRelevantFacts(state.originalInput),
+      relevantFacts: await this.getRelevantFacts(state.originalInput),
       recentEvents: recentMessages,
       userPreferences: this.getUserPreferences(),
     };
   }
 
-  private getRelevantFacts(query: string): string[] {
-    const memories = this.memory.getLongTerm().search(query, 3);
+  private async getRelevantFacts(query: string): Promise<string[]> {
+    const memories = await this.sessionMemory.getLongTerm().search(query, { limit: 3 });
     return memories.map(m => m.content);
   }
 

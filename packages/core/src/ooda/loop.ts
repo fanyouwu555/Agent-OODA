@@ -1,9 +1,9 @@
-// packages/core/src/ooda/loop.ts
 import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult } from '../types';
-import { Observer } from './observe';
-import { Orienter } from './orient';
+import { Observer, resetObserverState, initObserverLastStoredCount } from './observe';
+import { Orienter, resetOrienterState, initOrienterCompressedCount } from './orient';
 import { Decider } from './decide';
 import { Actor } from './act';
+import { getSessionMemory, SessionMemory } from '../memory';
 
 interface CacheEntry<T> {
   value: T;
@@ -23,6 +23,7 @@ interface LoopContext {
   previousResults: ActionResult[];
   learningInsights: string[];
   adaptationNotes: string[];
+  conversationSummary?: string;
 }
 
 export interface OODAEvent {
@@ -52,11 +53,35 @@ export interface OODAEvent {
 
 export type OODACallback = (event: OODAEvent) => Promise<void> | void;
 
+class SessionLoopContextManager {
+  private contexts: Map<string, LoopContext> = new Map();
+  
+  getContext(sessionId: string): LoopContext {
+    if (!this.contexts.has(sessionId)) {
+      this.contexts.set(sessionId, {
+        previousResults: [],
+        learningInsights: [],
+        adaptationNotes: [],
+      });
+    }
+    return this.contexts.get(sessionId)!;
+  }
+  
+  clearContext(sessionId: string): void {
+    this.contexts.delete(sessionId);
+  }
+}
+
+const sessionLoopContextManager = new SessionLoopContextManager();
+
 export class OODALoop {
-  private observer = new Observer();
-  private orienter = new Orienter();
-  private decider = new Decider();
-  private actor = new Actor();
+  private sessionId: string;
+  private observer: Observer;
+  private orienter: Orienter;
+  private decider: Decider;
+  private actor: Actor;
+  private sessionMemory: SessionMemory;
+  private loopContext: LoopContext;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -67,34 +92,86 @@ export class OODALoop {
   private orientationCache = new Map<string, CacheEntry<Orientation>>();
   private decisionCache = new Map<string, CacheEntry<Decision>>();
   
-  private cacheTTL = 30000;
+  private cacheTTL = 60000;
+  private enableCache = false;
+  private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
   
-  private loopContext: LoopContext = {
-    previousResults: [],
-    learningInsights: [],
-    adaptationNotes: [],
-  };
+  constructor(sessionId?: string) {
+    this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.sessionMemory = getSessionMemory(this.sessionId);
+    this.loopContext = sessionLoopContextManager.getContext(this.sessionId);
+    this.observer = new Observer(this.sessionId);
+    this.orienter = new Orienter(this.sessionId);
+    this.decider = new Decider();
+    this.actor = new Actor(this.sessionId);
+  }
 
   async run(input: string): Promise<AgentResult> {
     return this.runWithCallback(input, () => {});
   }
 
-  async runWithCallback(input: string, callback: OODACallback): Promise<AgentResult> {
-    this.loopContext = {
-      previousResults: [],
-      learningInsights: [],
-      adaptationNotes: [],
-    };
+  async runWithCallback(input: string, callback: OODACallback, history?: Message[]): Promise<AgentResult> {
+    this.loopContext = sessionLoopContextManager.getContext(this.sessionId);
+    
+    this.currentIteration = 0;
+    this.performanceMetrics = [];
+    
+    resetObserverState(this.sessionId);
+    resetOrienterState(this.sessionId);
+    
+    console.log(`[OODA] Session ${this.sessionId}: Starting with history sync...`);
+    
+    if (history && history.length > 0) {
+      const existingMessages = this.sessionMemory.getShortTerm().getRecentMessages(100);
+      const existingIds = new Set(existingMessages.map(m => m.id));
+      
+      let syncedCount = 0;
+      for (const msg of history) {
+        if (!existingIds.has(msg.id)) {
+          this.sessionMemory.getShortTerm().storeMessage(msg);
+          syncedCount++;
+        }
+      }
+      console.log(`[OODA] Synced ${syncedCount} new history messages to session memory (total existing: ${existingMessages.length})`);
+    }
+    
+    const memoryMessages = this.sessionMemory.getShortTerm().getRecentMessages(100);
+    console.log(`[OODA] Session memory now has ${memoryMessages.length} messages`);
+    
+    initObserverLastStoredCount(this.sessionId, memoryMessages.length);
+    
+    const COMPRESS_THRESHOLD = 20;
+    if (memoryMessages.length > COMPRESS_THRESHOLD) {
+      const oldMessagesCount = memoryMessages.length - 10;
+      initOrienterCompressedCount(this.sessionId, oldMessagesCount);
+      console.log(`[OODA] Initialized Orienter compressedCount to ${oldMessagesCount} for ${memoryMessages.length} messages`);
+    }
+    
+    const initialHistory: Message[] = memoryMessages.length > 0
+      ? [...memoryMessages, {
+          id: `msg-${Date.now()}`,
+          role: 'user' as const,
+          content: input,
+          timestamp: Date.now(),
+        }]
+      : history
+        ? [...history, {
+            id: `msg-${Date.now()}`,
+            role: 'user' as const,
+            content: input,
+            timestamp: Date.now(),
+          }]
+        : [{
+            id: 'initial',
+            role: 'user' as const,
+            content: input,
+            timestamp: Date.now(),
+          }];
     
     const initialState: AgentState = {
       originalInput: input,
-      history: [{
-        id: 'initial',
-        role: 'user',
-        content: input,
-        timestamp: Date.now(),
-      }],
+      history: initialHistory,
       currentStep: 0,
       isComplete: false,
       metadata: {},
@@ -125,6 +202,15 @@ export class OODALoop {
     return this.finalizeResult(state);
   }
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  clearSessionContext(): void {
+    sessionLoopContextManager.clearContext(this.sessionId);
+    this.sessionMemory.clear();
+  }
+
   private async executeOODACycle(state: AgentState, callback: OODACallback): Promise<AgentState> {
     console.log(`[OODA] Starting cycle ${this.currentIteration}`);
     const cycleStartTime = Date.now();
@@ -148,6 +234,9 @@ export class OODALoop {
     console.log('[OODA] Getting orientation...');
     const orientation = await this.getCachedOrientation(observation);
     console.log('[OODA] Orientation complete:', orientation.primaryIntent.type);
+    
+    this.loopContext.conversationSummary = orientation.relevantContext?.contextSummary;
+    
     await callback({ 
       phase: 'orient', 
       data: { 
@@ -224,8 +313,21 @@ export class OODALoop {
     
     this.extractLearningInsights(actionResult, decision);
     
-    const newMessages: Message[] = [
-      {
+    const newMessages: Message[] = [];
+    
+    if (decision.nextAction.type === 'response' && decision.nextAction.content) {
+      newMessages.push({
+        id: `response-${state.currentStep}`,
+        role: 'assistant',
+        content: decision.nextAction.content,
+        timestamp: Date.now(),
+        parts: [{
+          type: 'text',
+          text: decision.nextAction.content,
+        }],
+      });
+    } else {
+      newMessages.push({
         id: `step-${state.currentStep}`,
         role: 'assistant',
         content: decision.reasoning,
@@ -234,8 +336,8 @@ export class OODALoop {
           type: 'text',
           text: decision.reasoning,
         }],
-      },
-    ];
+      });
+    }
     
     if (decision.nextAction.type === 'tool_call' || decision.nextAction.type === 'skill_call') {
       newMessages.push({
@@ -281,6 +383,7 @@ export class OODALoop {
         lastResult: actionResult,
         performanceMetrics: metrics,
         learningInsights: this.loopContext.learningInsights,
+        conversationSummary: this.loopContext.conversationSummary,
       },
     };
     
@@ -316,6 +419,10 @@ export class OODALoop {
     
     if (this.loopContext.learningInsights.length > 0) {
       observation.context.relevantFacts.push(...this.loopContext.learningInsights.slice(-5));
+    }
+    
+    if (this.loopContext.conversationSummary) {
+      observation.context.relevantFacts.unshift(`对话摘要: ${this.loopContext.conversationSummary}`);
     }
   }
 
@@ -413,7 +520,7 @@ export class OODALoop {
     }
     
     if (actionResult.success) {
-      const resultData = actionResult.result as any;
+      const resultData = actionResult.result as Record<string, unknown>;
       if (resultData && resultData.result) {
         if (typeof resultData.result === 'string') {
           return resultData.result;
@@ -431,6 +538,10 @@ export class OODALoop {
   }
 
   private async getCachedObservation(state: AgentState): Promise<Observation> {
+    if (!this.enableCache) {
+      return this.observer.observe(state);
+    }
+    
     const cacheKey = this.generateCacheKey(state);
     const cached = this.observationCache.get(cacheKey);
     
@@ -450,6 +561,10 @@ export class OODALoop {
   }
 
   private async getCachedOrientation(observation: Observation): Promise<Orientation> {
+    if (!this.enableCache) {
+      return this.orienter.orient(observation);
+    }
+    
     const cacheKey = this.generateObservationKey(observation);
     const cached = this.orientationCache.get(cacheKey);
     
@@ -469,6 +584,10 @@ export class OODALoop {
   }
 
   private async getCachedDecision(orientation: Orientation): Promise<Decision> {
+    if (!this.enableCache) {
+      return this.decider.decide(orientation);
+    }
+    
     const cacheKey = this.generateOrientationKey(orientation);
     const cached = this.decisionCache.get(cacheKey);
     
@@ -488,15 +607,19 @@ export class OODALoop {
   }
 
   private generateCacheKey(state: AgentState): string {
-    return `${state.originalInput}-${state.currentStep}-${state.history.length}`;
+    const historyHash = state.history.slice(-3).map(m => m.content?.slice(0, 50) || '').join('|');
+    return `${state.originalInput.slice(0, 50)}-${state.currentStep}-${historyHash}`;
   }
 
   private generateObservationKey(observation: Observation): string {
-    return `${observation.userInput}-${observation.toolResults.length}`;
+    const toolHash = observation.toolResults.slice(-2).map(r => r.toolName).join('|');
+    return `${observation.userInput.slice(0, 50)}-${toolHash}-${Date.now()}`;
   }
 
   private generateOrientationKey(orientation: Orientation): string {
-    return `${orientation.primaryIntent.type}-${orientation.constraints.length}`;
+    const intentHash = `${orientation.primaryIntent.type}-${orientation.primaryIntent.confidence}`;
+    const constraintHash = orientation.constraints.slice(0, 2).map(c => c.type).join('|');
+    return `${intentHash}-${constraintHash}-${Date.now()}`;
   }
 
   private optimizeHistory(state: AgentState): AgentState {

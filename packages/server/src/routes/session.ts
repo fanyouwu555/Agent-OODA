@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { OODALoop, getConfigManager, reinitializeLLMService } from '@ooda-agent/core';
-import { ToolRegistry, readFileTool, writeFileTool, runBashTool, searchWebTool } from '@ooda-agent/tools';
+import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import WebSocket from 'ws';
 
@@ -17,23 +17,66 @@ let storagePromise: ReturnType<typeof createStorage> | null = null;
 async function getStorage() {
   if (!storagePromise) {
     const dbPath = process.env.DATABASE_PATH || './data/ooda-agent.db';
-    storagePromise = createStorage(dbPath);
+    console.log(`[Storage] Initializing storage at: ${dbPath}`);
+    try {
+      storagePromise = createStorage(dbPath);
+      await storagePromise;
+      console.log(`[Storage] Storage initialized successfully`);
+    } catch (error) {
+      console.error(`[Storage] Failed to initialize storage:`, error);
+      throw error;
+    }
   }
   return storagePromise;
 }
 
 const wsClients = new Map<string, Set<WebSocket>>();
+const wsClientSessions = new Map<WebSocket, Set<string>>();
+const wsHeartbeats = new Map<WebSocket, NodeJS.Timeout>();
 
 const pendingConfirmations = new Map<string, {
   resolve: (allowed: boolean) => void;
   sessionId: string;
 }>();
 
-const toolRegistry = new ToolRegistry();
-toolRegistry.register(readFileTool);
-toolRegistry.register(writeFileTool);
-toolRegistry.register(runBashTool);
-toolRegistry.register(searchWebTool);
+const toolRegistry = initializeTools();
+
+function heartbeat(ws: WebSocket) {
+  wsHeartbeats.delete(ws);
+}
+
+export function cleanupWebSocket(ws: WebSocket) {
+  const sessions = wsClientSessions.get(ws);
+  if (sessions) {
+    sessions.forEach(sessionId => {
+      wsClients.get(sessionId)?.delete(ws);
+      if (wsClients.get(sessionId)?.size === 0) {
+        wsClients.delete(sessionId);
+      }
+    });
+    wsClientSessions.delete(ws);
+  }
+  const heartbeatTimer = wsHeartbeats.get(ws);
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer);
+    wsHeartbeats.delete(ws);
+  }
+}
+
+export function setupHeartbeat(ws: WebSocket) {
+  const existingTimer = wsHeartbeats.get(ws);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+  
+  const timer = setTimeout(() => {
+    console.log('[WebSocket] Heartbeat timeout, terminating connection');
+    cleanupWebSocket(ws);
+    ws.terminate();
+  }, 30000);
+  
+  wsHeartbeats.set(ws, timer);
+}
 
 export function handleWebSocketMessage(ws: WebSocket, message: string) {
   try {
@@ -46,6 +89,12 @@ export function handleWebSocketMessage(ws: WebSocket, message: string) {
           wsClients.set(sessionId, new Set());
         }
         wsClients.get(sessionId)!.add(ws);
+        
+        if (!wsClientSessions.has(ws)) {
+          wsClientSessions.set(ws, new Set());
+        }
+        wsClientSessions.get(ws)!.add(sessionId);
+        
         ws.send(JSON.stringify({ type: 'subscribed', payload: sessionId }));
         break;
       }
@@ -53,6 +102,10 @@ export function handleWebSocketMessage(ws: WebSocket, message: string) {
       case 'unsubscribe': {
         const sessionId = msg.payload as string;
         wsClients.get(sessionId)?.delete(ws);
+        if (wsClients.get(sessionId)?.size === 0) {
+          wsClients.delete(sessionId);
+        }
+        wsClientSessions.get(ws)?.delete(sessionId);
         ws.send(JSON.stringify({ type: 'unsubscribed', payload: sessionId }));
         break;
       }
@@ -68,6 +121,7 @@ export function handleWebSocketMessage(ws: WebSocket, message: string) {
       }
       
       case 'ping':
+        setupHeartbeat(ws);
         ws.send(JSON.stringify({ type: 'pong' }));
         break;
     }
@@ -124,13 +178,20 @@ interface SSEWriter {
 
 sessionRoutes
   .post('/session', async (c) => {
-    const store = await getStorage();
-    const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    const session = store.sessions.create({ id: sessionId });
-    console.log(`[Session] Created: ${sessionId}`);
-    
-    return c.json({ sessionId: session.id });
+    try {
+      console.log('[Session] Creating new session...');
+      const store = await getStorage();
+      console.log('[Session] Storage obtained');
+      const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      const session = store.sessions.create({ id: sessionId });
+      console.log(`[Session] Created: ${sessionId}`);
+      
+      return c.json({ sessionId: session.id });
+    } catch (error) {
+      console.error('[Session] Error creating session:', error);
+      return c.json({ error: 'Failed to create session', message: (error as Error).message }, 500);
+    }
   })
 
   .post('/session/:id/message', async (c) => {
@@ -156,6 +217,14 @@ sessionRoutes
       return c.json({ error: 'Message required' }, 400);
     }
     
+    const existingMessages = store.messages.findBySessionId(sessionId);
+    const history = existingMessages.map(msg => ({
+      id: msg.id,
+      role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
+      content: msg.content,
+      timestamp: msg.timestamp,
+    }));
+    
     const userMessageId = `msg-${Date.now()}`;
     store.messages.create({
       id: userMessageId,
@@ -164,8 +233,15 @@ sessionRoutes
       content: message,
       timestamp: Date.now(),
     });
+
+    if (existingMessages.length === 0 && !session.title) {
+      const title = message.slice(0, 50) + (message.length > 50 ? '...' : '');
+      store.sessions.update(sessionId, { title });
+      console.log(`[Session] Auto-set title for session ${sessionId}: ${title}`);
+    }
     
     console.log(`[Request] POST /api/session/${sessionId}/message`);
+    console.log(`[Context] Loaded ${history.length} history messages`);
     
     return streamSSE(c, async (stream) => {
       console.log(`[DEBUG] streamSSE started`);
@@ -178,10 +254,10 @@ sessionRoutes
       
       try {
         await sendEvent('thinking', { content: '正在分析您的请求...' });
-        console.log(`[DEBUG] Creating OODALoop`);
+        console.log(`[DEBUG] Creating OODALoop for session: ${sessionId}`);
         
-        const oodaLoop = new OODALoop();
-        console.log(`[DEBUG] OODALoop created, running...`);
+        const oodaLoop = new OODALoop(sessionId);
+        console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);
         
         const result = await oodaLoop.runWithCallback(message, async (event) => {
           console.log(`[OODA] Event: ${event.phase}`);
@@ -220,7 +296,7 @@ sessionRoutes
               }
               break;
           }
-        });
+        }, history);
         
         const toolCalls = result.steps?.map((step: any, index: number) => ({
           id: `tool-${Date.now()}-${index}`,
@@ -291,7 +367,16 @@ sessionRoutes
       const toolCalls = store.toolCalls.findByMessageId(msg.id);
       return {
         ...msg,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        toolCalls: toolCalls.length > 0 ? toolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.toolName,
+          args: tc.args,
+          status: tc.status,
+          result: tc.result,
+          error: tc.error,
+          startTime: tc.startTime,
+          endTime: tc.endTime,
+        })) : undefined,
       };
     });
     
@@ -308,9 +393,26 @@ sessionRoutes
     }
     
     const messages = store.messages.findBySessionId(sessionId);
+    const messagesWithToolCalls = messages.map(msg => {
+      const toolCalls = store.toolCalls.findByMessageId(msg.id);
+      return {
+        ...msg,
+        toolCalls: toolCalls.length > 0 ? toolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.toolName,
+          args: tc.args,
+          status: tc.status,
+          result: tc.result,
+          error: tc.error,
+          startTime: tc.startTime,
+          endTime: tc.endTime,
+        })) : undefined,
+      };
+    });
+    
     return c.json({
       ...session,
-      messages,
+      messages: messagesWithToolCalls,
     });
   })
 
@@ -330,8 +432,188 @@ sessionRoutes
 
   .get('/sessions', async (c) => {
     const store = await getStorage();
-    const sessions = store.sessions.findAll();
-    return c.json(sessions);
+    const status = c.req.query('status') as 'active' | 'archived' | undefined;
+    
+    const sessionsWithCounts = store.sessions.findAllWithMessageCount(status);
+    
+    return c.json(sessionsWithCounts.map(session => ({
+      id: session.id,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      title: session.title,
+      summary: session.summary,
+      status: session.status,
+      messageCount: session.messageCount,
+      lastMessageAt: session.lastMessageAt,
+      firstMessageContent: session.firstMessageContent,
+    })));
+  })
+
+  .get('/sessions/search', async (c) => {
+    const query = c.req.query('q');
+    if (!query) {
+      return c.json({ error: 'Query parameter q is required' }, 400);
+    }
+    
+    const store = await getStorage();
+    const sessions = store.sessions.search(query);
+    
+    const sessionsWithCounts = sessions.map(session => {
+      const messages = store.messages.findBySessionId(session.id);
+      return {
+        ...session,
+        messageCount: messages.length,
+        lastMessage: messages.length > 0 ? messages[messages.length - 1] : null,
+      };
+    });
+    
+    return c.json(sessionsWithCounts);
+  })
+
+  .patch('/session/:id/archive', async (c) => {
+    const sessionId = c.req.param('id');
+    const store = await getStorage();
+    
+    const session = store.sessions.findById(sessionId);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    
+    store.sessions.archive(sessionId);
+    return c.json({ success: true, status: 'archived' });
+  })
+
+  .patch('/session/:id/restore', async (c) => {
+    const sessionId = c.req.param('id');
+    const store = await getStorage();
+    
+    const session = store.sessions.findById(sessionId);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    
+    store.sessions.restore(sessionId);
+    return c.json({ success: true, status: 'active' });
+  })
+
+  .patch('/session/:id/title', async (c) => {
+    const sessionId = c.req.param('id');
+    const body = await c.req.json();
+    const { title } = body;
+    
+    if (!title) {
+      return c.json({ error: 'Title is required' }, 400);
+    }
+    
+    const store = await getStorage();
+    const session = store.sessions.findById(sessionId);
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    
+    store.sessions.update(sessionId, { title });
+    return c.json({ success: true, title });
+  })
+
+  .get('/sessions/count', async (c) => {
+    const store = await getStorage();
+    const count = store.sessions.count();
+    return c.json({ count });
+  })
+
+  .delete('/sessions', async (c) => {
+    const store = await getStorage();
+    
+    const sessionsCount = store.sessions.count();
+    const messagesCount = store.messages.count();
+    const toolCallsCount = store.toolCalls.count();
+    
+    store.toolCalls.deleteAll();
+    store.messages.deleteAll();
+    store.sessions.deleteAll();
+    
+    console.log(`[Session] Cleared all data: ${sessionsCount} sessions, ${messagesCount} messages, ${toolCallsCount} tool calls`);
+    
+    return c.json({ 
+      success: true, 
+      deleted: { 
+        sessions: sessionsCount, 
+        messages: messagesCount, 
+        toolCalls: toolCallsCount 
+      } 
+    });
+  })
+
+  .delete('/sessions/archived', async (c) => {
+    const store = await getStorage();
+    
+    const archivedSessions = store.sessions.findByStatus('archived');
+    let messagesCount = 0;
+    let toolCallsCount = 0;
+    
+    for (const session of archivedSessions) {
+      const messages = store.messages.findBySessionId(session.id);
+      messagesCount += messages.length;
+      for (const msg of messages) {
+        const toolCalls = store.toolCalls.findByMessageId(msg.id);
+        toolCallsCount += toolCalls.length;
+      }
+      store.messages.deleteBySessionId(session.id);
+    }
+    
+    const sessionsCount = store.sessions.deleteByStatus('archived');
+    
+    console.log(`[Session] Cleared archived sessions: ${sessionsCount} sessions, ${messagesCount} messages, ${toolCallsCount} tool calls`);
+    
+    return c.json({ 
+      success: true, 
+      deleted: { 
+        sessions: sessionsCount, 
+        messages: messagesCount, 
+        toolCalls: toolCallsCount 
+      } 
+    });
+  })
+
+  .delete('/sessions/old', async (c) => {
+    const days = parseInt(c.req.query('days') || '30', 10);
+    
+    if (isNaN(days) || days < 1) {
+      return c.json({ error: 'Invalid days parameter. Must be a positive integer.' }, 400);
+    }
+    
+    const store = await getStorage();
+    
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const allSessions = store.sessions.findAll();
+    const oldSessions = allSessions.filter(s => s.createdAt < cutoff);
+    
+    let messagesCount = 0;
+    let toolCallsCount = 0;
+    
+    for (const session of oldSessions) {
+      const messages = store.messages.findBySessionId(session.id);
+      messagesCount += messages.length;
+      for (const msg of messages) {
+        const toolCalls = store.toolCalls.findByMessageId(msg.id);
+        toolCallsCount += toolCalls.length;
+      }
+      store.messages.deleteBySessionId(session.id);
+    }
+    
+    const sessionsCount = store.sessions.deleteOlderThan(days);
+    
+    console.log(`[Session] Cleared sessions older than ${days} days: ${sessionsCount} sessions, ${messagesCount} messages, ${toolCallsCount} tool calls`);
+    
+    return c.json({ 
+      success: true, 
+      deleted: { 
+        sessions: sessionsCount, 
+        messages: messagesCount, 
+        toolCalls: toolCallsCount 
+      },
+      cutoffDate: new Date(cutoff).toISOString()
+    });
   })
 
   .post('/session/:id/confirm', async (c) => {

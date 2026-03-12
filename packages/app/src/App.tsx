@@ -4,6 +4,36 @@ import { apiClient } from './services/api';
 import { createWebSocketClient } from './services/websocket';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { ToastContainer, showToast } from './components/Toast';
+import { SessionList } from './components/SessionList';
+import { AgentConfigPanel } from './components/AgentConfigPanel';
+import { ToolRegistryPanel } from './components/ToolRegistryPanel';
+import { PermissionPanel } from './components/PermissionPanel';
+
+const SESSION_STORAGE_KEY = 'ooda-agent-session-id';
+
+function getSessionIdFromStorage(): string | null {
+  try {
+    return localStorage.getItem(SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionIdToStorage(sessionId: string): void {
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function clearSessionIdFromStorage(): void {
+  try {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 function App() {
   const [sessionId, setSessionId] = createSignal('');
@@ -21,7 +51,7 @@ function App() {
   const [currentReasoning, setCurrentReasoning] = createSignal<string>('');
   const [oodaStep, setOodaStep] = createSignal<string>('');
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
-  const [activeTab, setActiveTab] = createSignal<'models' | 'skills' | 'settings'>('models');
+  const [activeTab, setActiveTab] = createSignal<'sessions' | 'models' | 'skills' | 'agents' | 'tools' | 'permissions' | 'settings'>('sessions');
 
   let messagesContainer: HTMLDivElement | undefined;
   let wsClient: ReturnType<typeof createWebSocketClient>;
@@ -30,19 +60,18 @@ function App() {
     wsClient = createWebSocketClient({
       url: '/ws',
       reconnect: true,
+      heartbeatInterval: 25000,
       onOpen: () => {
         setConnectionStatus('connected');
-        showToast('success', 'WebSocket 已连接');
       },
       onClose: () => {
         setConnectionStatus('disconnected');
-        showToast('warning', 'WebSocket 已断开');
       },
       onMessage: (msg) => {
         handleWebSocketMessage(msg);
       },
       onError: () => {
-        showToast('error', 'WebSocket 连接错误');
+        console.error('[WebSocket] Connection error');
       },
     });
     wsClient.connect();
@@ -77,30 +106,100 @@ function App() {
     }
   };
 
-  createEffect(async () => {
-    if (!sessionId()) {
-      const result = await apiClient.createSession();
+  let sessionInitialized = false;
+  
+  const initializeSession = async () => {
+    if (sessionInitialized || sessionId()) return;
+    sessionInitialized = true;
+    
+    const savedSessionId = getSessionIdFromStorage();
+    if (savedSessionId) {
+      const result = await apiClient.getSession(savedSessionId);
       if (result.success && result.data) {
-        setSessionId(result.data.sessionId);
-      } else {
-        showToast('error', result.error || '创建会话失败');
+        setSessionId(savedSessionId);
+        if (result.data.messages) {
+          setMessages(result.data.messages);
+        }
+        return;
       }
+    }
+    const result = await apiClient.createSession();
+    if (result.success && result.data) {
+      setSessionId(result.data.sessionId);
+      saveSessionIdToStorage(result.data.sessionId);
+    } else {
+      showToast('error', result.error || '创建会话失败');
+    }
+  };
+  
+  onMount(() => {
+    initializeSession();
+  });
+
+  createEffect(() => {
+    const id = sessionId();
+    if (id) {
+      saveSessionIdToStorage(id);
     }
   });
 
-  createEffect(async () => {
+  const switchSession = async (newSessionId: string) => {
+    if (newSessionId === sessionId()) return;
+    
+    setSessionId(newSessionId);
+    setMessages([]);
+    setCurrentToolCalls([]);
+    saveSessionIdToStorage(newSessionId);
+    
+    const result = await apiClient.getSessionHistory(newSessionId);
+    if (result.success && result.data) {
+      setMessages(result.data);
+    }
+    
+    if (wsClient?.isConnected()) {
+      wsClient.send({ type: 'subscribe', payload: newSessionId });
+    }
+    
+    showToast('success', '已切换会话');
+  };
+
+  const createNewSession = async () => {
+    const result = await apiClient.createSession();
+    if (result.success && result.data) {
+      setSessionId(result.data.sessionId);
+      setMessages([]);
+      setCurrentToolCalls([]);
+      saveSessionIdToStorage(result.data.sessionId);
+      showToast('success', '已创建新会话');
+    } else {
+      showToast('error', result.error || '创建会话失败');
+    }
+  };
+
+  let skillsLoaded = false;
+  const loadSkills = async () => {
+    if (skillsLoaded) return;
+    skillsLoaded = true;
     const result = await apiClient.getSkills();
     if (result.success && result.data) {
       setSkills(result.data);
     }
-  });
+  };
 
-  createEffect(async () => {
+  let modelsLoaded = false;
+  const loadModels = async () => {
+    if (modelsLoaded) return;
+    modelsLoaded = true;
     const result = await apiClient.getModels();
     if (result.success && result.data) {
       setProviders(result.data.providers);
       setModelInfo(result.data.activeModel);
     }
+  };
+
+  onMount(() => {
+    loadSkills();
+    loadModels();
   });
 
   const switchModel = async (providerName: string, modelName: string) => {
@@ -302,6 +401,15 @@ function App() {
         <Show when={sidebarOpen()}>
           <div class="sidebar-tabs">
             <button 
+              class={`tab ${activeTab() === 'sessions' ? 'active' : ''}`}
+              onClick={() => setActiveTab('sessions')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              会话
+            </button>
+            <button 
               class={`tab ${activeTab() === 'models' ? 'active' : ''}`}
               onClick={() => setActiveTab('models')}
             >
@@ -334,6 +442,17 @@ function App() {
         </Show>
 
         <div class="sidebar-content">
+          <Show when={sidebarOpen() && activeTab() === 'sessions'}>
+            <SessionList
+              currentSessionId={sessionId()}
+              onSelectSession={switchSession}
+              onNewSession={createNewSession}
+              onClearAll={async () => {
+                clearSessionIdFromStorage();
+                await createNewSession();
+              }}
+            />
+          </Show>
           <Show when={sidebarOpen() && activeTab() === 'models'}>
             <div class="models-section">
               <div class="section-title">
@@ -404,6 +523,18 @@ function App() {
             </div>
           </Show>
 
+          <Show when={sidebarOpen() && activeTab() === 'agents'}>
+            <AgentConfigPanel />
+          </Show>
+
+          <Show when={sidebarOpen() && activeTab() === 'tools'}>
+            <ToolRegistryPanel />
+          </Show>
+
+          <Show when={sidebarOpen() && activeTab() === 'permissions'}>
+            <PermissionPanel />
+          </Show>
+
           <Show when={sidebarOpen() && activeTab() === 'settings'}>
             <div class="settings-section">
               <div class="section-title">设置</div>
@@ -470,7 +601,7 @@ function App() {
 
         <Show when={isLoading() && oodaStep()}>
           <div class="ooda-progress">
-            <div class="progress-content">
+            <div class="progress-header">
               <div class="progress-spinner">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="0">
@@ -478,50 +609,98 @@ function App() {
                   </circle>
                 </svg>
               </div>
-              <div class="progress-info">
-                <span class="progress-step">{oodaStep()}</span>
-                <Show when={currentThinking()}>
-                  <p class="progress-detail">💭 {currentThinking()}</p>
-                </Show>
-                <Show when={currentIntent()}>
-                  <p class="progress-detail">🎯 {currentIntent()}</p>
-                </Show>
-                <Show when={currentReasoning()}>
-                  <p class="progress-detail">💡 {currentReasoning()}</p>
-                </Show>
-              </div>
+              <span class="progress-step">{oodaStep()}</span>
+            </div>
+            <div class="progress-details">
+              <Show when={currentThinking()}>
+                <div class="detail-item thinking">
+                  <div class="detail-icon">💭</div>
+                  <div class="detail-content">
+                    <span class="detail-label">思考</span>
+                    <p class="detail-text">{currentThinking()}</p>
+                  </div>
+                </div>
+              </Show>
+              <Show when={currentIntent()}>
+                <div class="detail-item intent">
+                  <div class="detail-icon">🎯</div>
+                  <div class="detail-content">
+                    <span class="detail-label">意图</span>
+                    <p class="detail-text">{currentIntent()}</p>
+                  </div>
+                </div>
+              </Show>
+              <Show when={currentReasoning()}>
+                <div class="detail-item reasoning">
+                  <div class="detail-icon">💡</div>
+                  <div class="detail-content">
+                    <span class="detail-label">推理</span>
+                    <p class="detail-text">{currentReasoning()}</p>
+                  </div>
+                </div>
+              </Show>
             </div>
           </div>
         </Show>
 
         <Show when={currentToolCalls().length > 0}>
-          <div class="tool-calls-bar">
-            <For each={currentToolCalls()}>
-              {(tool) => (
-                <div class={`tool-chip ${tool.status}`}>
-                  <Show when={tool.status === 'running'} fallback={
-                    <Show when={tool.status === 'success'} fallback={
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="15" y1="9" x2="9" y2="15"/>
-                        <line x1="9" y1="9" x2="15" y2="15"/>
-                      </svg>
-                    }>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                        <polyline points="22 4 12 14.01 9 11.01"/>
-                      </svg>
+          <div class="tool-calls-panel">
+            <div class="panel-header">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+              </svg>
+              <span>工具调用</span>
+            </div>
+            <div class="tool-calls-list">
+              <For each={currentToolCalls()}>
+                {(tool) => (
+                  <div class={`tool-item ${tool.status}`}>
+                    <div class="tool-header">
+                      <div class="tool-status-icon">
+                        <Show when={tool.status === 'running'} fallback={
+                          <Show when={tool.status === 'success'} fallback={
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <circle cx="12" cy="12" r="10"/>
+                              <line x1="15" y1="9" x2="9" y2="15"/>
+                              <line x1="9" y1="9" x2="15" y2="15"/>
+                            </svg>
+                          }>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                              <polyline points="22 4 12 14.01 9 11.01"/>
+                            </svg>
+                          </Show>
+                        }>
+                          <div class="spinner-small"></div>
+                        </Show>
+                      </div>
+                      <span class="tool-name">{tool.name}</span>
+                      <Show when={tool.endTime}>
+                        <span class="tool-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
+                      </Show>
+                    </div>
+                    <Show when={Object.keys(tool.args).length > 0}>
+                      <div class="tool-args">
+                        <span class="args-label">参数:</span>
+                        <pre class="args-content">{JSON.stringify(tool.args, null, 2)}</pre>
+                      </div>
                     </Show>
-                  }>
-                    <div class="spinner-small"></div>
-                  </Show>
-                  <span>{tool.name}</span>
-                  <Show when={tool.endTime}>
-                    <span class="tool-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
-                  </Show>
-                </div>
-              )}
-            </For>
+                    <Show when={tool.result !== undefined && tool.status === 'success'}>
+                      <div class="tool-result-preview">
+                        <span class="result-label">结果:</span>
+                        <pre class="result-content">{typeof tool.result === 'string' ? tool.result.substring(0, 200) + (tool.result.length > 200 ? '...' : '') : JSON.stringify(tool.result, null, 2).substring(0, 200)}</pre>
+                      </div>
+                    </Show>
+                    <Show when={tool.error}>
+                      <div class="tool-error">
+                        <span class="error-label">错误:</span>
+                        <span class="error-text">{tool.error}</span>
+                      </div>
+                    </Show>
+                  </div>
+                )}
+              </For>
+            </div>
           </div>
         </Show>
 
@@ -569,27 +748,91 @@ function App() {
                       <p>{msg.content}</p>
                     </div>
                     <Show when={msg.role === 'assistant' && (msg.thinking || msg.intent || msg.reasoning)}>
-                      <details class="ooda-details">
-                        <summary>OODA 过程</summary>
-                        <Show when={msg.thinking}><p><strong>思考:</strong> {msg.thinking}</p></Show>
-                        <Show when={msg.intent}><p><strong>意图:</strong> {msg.intent}</p></Show>
-                        <Show when={msg.reasoning}><p><strong>推理:</strong> {msg.reasoning}</p></Show>
-                      </details>
+                      <div class="message-ooda-section">
+                        <div class="ooda-section-header">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 6v6l4 2"/>
+                          </svg>
+                          <span>OODA 决策过程</span>
+                        </div>
+                        <div class="ooda-steps">
+                          <Show when={msg.thinking}>
+                            <div class="ooda-step thinking">
+                              <div class="step-icon">💭</div>
+                              <div class="step-content">
+                                <span class="step-label">思考 (Observe)</span>
+                                <p class="step-text">{msg.thinking}</p>
+                              </div>
+                            </div>
+                          </Show>
+                          <Show when={msg.intent}>
+                            <div class="ooda-step intent">
+                              <div class="step-icon">🎯</div>
+                              <div class="step-content">
+                                <span class="step-label">意图 (Orient)</span>
+                                <p class="step-text">{msg.intent}</p>
+                              </div>
+                            </div>
+                          </Show>
+                          <Show when={msg.reasoning}>
+                            <div class="ooda-step reasoning">
+                              <div class="step-icon">💡</div>
+                              <div class="step-content">
+                                <span class="step-label">推理 (Decide)</span>
+                                <p class="step-text">{msg.reasoning}</p>
+                              </div>
+                            </div>
+                          </Show>
+                        </div>
+                      </div>
                     </Show>
                     <Show when={msg.toolCalls && msg.toolCalls.length > 0}>
-                      <div class="message-tools">
-                        <For each={msg.toolCalls}>
-                          {(tool) => (
-                            <div class={`tool-result ${tool.status}`}>
-                              <span class="tool-name">{tool.name}</span>
-                              <Show when={tool.status === 'success'}>
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <polyline points="20 6 9 17 4 12"/>
-                                </svg>
-                              </Show>
-                            </div>
-                          )}
-                        </For>
+                      <div class="message-tools-section">
+                        <div class="tools-section-header">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                          </svg>
+                          <span>工具调用 ({msg.toolCalls!.length})</span>
+                        </div>
+                        <div class="tools-list">
+                          <For each={msg.toolCalls}>
+                            {(tool) => (
+                              <div class={`message-tool-item ${tool.status}`}>
+                                <div class="tool-item-header">
+                                  <Show when={tool.status === 'success'} fallback={
+                                    <Show when={tool.status === 'error'} fallback={
+                                      <div class="tool-status pending"></div>
+                                    }>
+                                      <div class="tool-status error"></div>
+                                    </Show>
+                                  }>
+                                    <div class="tool-status success"></div>
+                                  </Show>
+                                  <span class="tool-item-name">{tool.name}</span>
+                                  <Show when={tool.endTime}>
+                                    <span class="tool-item-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
+                                  </Show>
+                                </div>
+                                <Show when={Object.keys(tool.args).length > 0}>
+                                  <div class="tool-item-args">
+                                    <span class="args-label">参数:</span>
+                                    <pre>{JSON.stringify(tool.args, null, 2)}</pre>
+                                  </div>
+                                </Show>
+                                <Show when={tool.result !== undefined}>
+                                  <div class="tool-item-result">
+                                    <span class="result-label">结果:</span>
+                                    <pre class="result-content">{typeof tool.result === 'string' ? tool.result.substring(0, 500) + (tool.result.length > 500 ? '...' : '') : JSON.stringify(tool.result, null, 2).substring(0, 500)}</pre>
+                                  </div>
+                                </Show>
+                                <Show when={tool.error}>
+                                  <div class="tool-item-error">{tool.error}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
                       </div>
                     </Show>
                   </div>

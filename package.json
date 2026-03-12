@@ -8,11 +8,13 @@
     "packages/*"
   ],
   "scripts": {
+    "start": "node --import tsx scripts/start.ts",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:app\"",
     "dev:server": "npm run dev --workspace @ooda-agent/server",
     "dev:app": "npm run dev --workspace @ooda-agent/app",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces",
+    "test:memory": "tsx tests/memory-test.ts",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "devDependencies": {
@@ -22,5 +24,8 @@
     "concurrently": "^8.2.2",
     "eslint": "^8.57.0",
     "typescript": "^5.4.3"
+  },
+  "dependencies": {
+    "djwt": "^2.0.0"
   }
 }

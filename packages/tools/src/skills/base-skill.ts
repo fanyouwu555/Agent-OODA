@@ -107,15 +107,17 @@ export class FileSkill extends BaseSkill {
 // 网络搜索技能
 export class WebSkill extends BaseSkill {
   name = 'web_skill';
-  description = '网络搜索技能';
+  description = '网络搜索和网页抓取技能';
   category = 'web';
-  version = '1.0.0';
+  version = '2.0.0';
   dependencies: string[] = [];
   
   schema = z.object({
-    action: z.enum(['search', 'fetch']),
+    action: z.enum(['search', 'fetch', 'search_and_fetch']),
     query: z.string().optional().describe('搜索关键词'),
     url: z.string().optional().describe('网页URL'),
+    limit: z.number().optional().describe('结果数量限制'),
+    fetchContent: z.boolean().optional().describe('是否抓取内容'),
   });
   
   permissions: Permission[] = [
@@ -123,42 +125,109 @@ export class WebSkill extends BaseSkill {
   ];
   
   async execute(input: any, context: SkillContext): Promise<unknown> {
-    const { action, query, url } = input;
+    const { action, query, url, limit, fetchContent } = input;
     
     switch (action) {
       case 'search':
-        return this.searchWeb(query!, context);
+        return this.searchWeb(query!, limit || 5, context);
       case 'fetch':
         return this.fetchWeb(url!, context);
+      case 'search_and_fetch':
+        return this.searchAndFetch(query!, limit || 3, fetchContent || false, context);
       default:
         throw new Error(`Unknown action: ${action}`);
     }
   }
   
-  private async searchWeb(query: string, context: SkillContext): Promise<unknown> {
-    // 模拟搜索
-    return {
-      action: 'search',
-      query,
-      results: [
-        {
-          title: `关于 ${query} 的搜索结果`,
-          url: `https://example.com/search?q=${encodeURIComponent(query)}`,
-          snippet: `这是关于 ${query} 的搜索结果摘要`,
-        },
-      ],
-      success: true,
-    };
+  private async searchWeb(query: string, limit: number, context: SkillContext): Promise<unknown> {
+    const { webSearch } = await import('../web-tools');
+    
+    try {
+      const results = await webSearch(query, limit);
+      return {
+        action: 'search',
+        query,
+        results,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        action: 'search',
+        query,
+        results: [],
+        error: (error as Error).message,
+        success: false,
+      };
+    }
   }
   
   private async fetchWeb(url: string, context: SkillContext): Promise<unknown> {
-    // 模拟网页抓取
-    return {
-      action: 'fetch',
-      url,
-      content: '网页内容',
-      success: true,
-    };
+    const { webFetch } = await import('../web-tools');
+    
+    try {
+      const result = await webFetch(url);
+      return {
+        action: 'fetch',
+        url,
+        title: result.title,
+        content: result.content,
+        statusCode: result.statusCode,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        action: 'fetch',
+        url,
+        error: (error as Error).message,
+        success: false,
+      };
+    }
+  }
+  
+  private async searchAndFetch(query: string, limit: number, fetchContent: boolean, context: SkillContext): Promise<unknown> {
+    const { webSearch, webFetch } = await import('../web-tools');
+    
+    try {
+      const results = await webSearch(query, limit);
+      
+      if (fetchContent) {
+        const enrichedResults = await Promise.all(
+          results.map(async (result) => {
+            try {
+              const fetched = await webFetch(result.url);
+              return {
+                ...result,
+                content: fetched.content.substring(0, 2000),
+              };
+            } catch {
+              return result;
+            }
+          })
+        );
+        
+        return {
+          action: 'search_and_fetch',
+          query,
+          results: enrichedResults,
+          success: true,
+        };
+      }
+      
+      return {
+        action: 'search_and_fetch',
+        query,
+        results,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        action: 'search_and_fetch',
+        query,
+        results: [],
+        error: (error as Error).message,
+        success: false,
+      };
+    }
   }
 }
 

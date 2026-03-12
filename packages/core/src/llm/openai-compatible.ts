@@ -1,5 +1,4 @@
-// packages/core/src/llm/openai-compatible.ts
-import { LLMProvider, GenerateOptions, StreamOptions, GenerateResult } from './provider';
+import { LLMProvider, GenerateOptions, StreamOptions, GenerateResult, ChatMessage } from './provider';
 
 export interface OpenAICompatibleConfig {
   model: string;
@@ -7,6 +6,29 @@ export interface OpenAICompatibleConfig {
   baseUrl: string;
   temperature?: number;
   maxTokens?: number;
+}
+
+const DEFAULT_SYSTEM_PROMPT = `你是一个智能助手，能够理解用户的问题并提供有帮助的回答。
+请根据对话上下文，给出准确、相关、有帮助的回答。
+如果用户的问题不明确，可以请求澄清。
+回答应该简洁明了，直接回应用户的问题。`;
+
+function getCurrentTimeInfo(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+  const weekday = weekdays[now.getDay()];
+  
+  return `当前时间信息:
+- 日期: ${year}年${month}月${day}日
+- 时间: ${hours}:${minutes}:${seconds}
+- 星期: 星期${weekday}
+- 时区: 本地时间`;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -25,17 +47,43 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.maxTokens = config.maxTokens ?? 2000;
   }
   
+  private buildMessages(prompt: string, options?: GenerateOptions): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+    
+    let systemPrompt = options?.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const timeInfo = getCurrentTimeInfo();
+    systemPrompt = `${systemPrompt}\n\n${timeInfo}`;
+    
+    messages.push({ role: 'system', content: systemPrompt });
+    
+    if (options?.history && options.history.length > 0) {
+      messages.push(...options.history);
+    }
+    
+    messages.push({ role: 'user', content: prompt });
+    
+    return messages;
+  }
+  
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult> {
+    const messages = this.buildMessages(prompt, options);
+    return this.chat(messages, options);
+  }
+  
+  async chat(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult> {
     const startTime = Date.now();
     const maxRetries = 3;
-    const baseDelay = 2000; // 2 seconds
+    const baseDelay = 2000;
     
     const url = `${this.baseUrl}/chat/completions`;
     const body = JSON.stringify({
       model: this.model,
-      messages: [
-        { role: 'user', content: prompt }
-      ],
+      messages: messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        ...(m.name && { name: m.name }),
+        ...(m.toolCallId && { tool_call_id: m.toolCallId }),
+      })),
       temperature: options?.temperature ?? this.temperature,
       max_tokens: options?.maxTokens ?? this.maxTokens,
       stream: false,
@@ -44,7 +92,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         console.log(`[OpenAI-Compatible] POST ${url} (attempt ${attempt}/${maxRetries})`);
-        console.log(`[OpenAI-Compatible] Model: ${this.model}`);
+        console.log(`[OpenAI-Compatible] Model: ${this.model}, Messages: ${messages.length}`);
         
         const response = await fetch(url, {
           method: 'POST',
@@ -102,6 +150,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
   
   async *stream(prompt: string, options?: StreamOptions): AsyncGenerator<string> {
+    const messages = this.buildMessages(prompt, options);
     const url = `${this.baseUrl}/chat/completions`;
     
     const response = await fetch(url, {
@@ -112,9 +161,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        messages: [
-          { role: 'user', content: prompt }
-        ],
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content,
+        })),
         temperature: options?.temperature ?? this.temperature,
         max_tokens: options?.maxTokens ?? this.maxTokens,
         stream: true,
