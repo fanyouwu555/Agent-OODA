@@ -3,6 +3,7 @@ export * from './registry';
 export * from './base-tool';
 export * from './web-tools';
 export * from './utility-tools';
+export * from './git-tools';
 export * from './skills/base-skill';
 export * from './skills/advanced-skills';
 
@@ -36,6 +37,7 @@ import {
   randomNumberTool,
   colorTool
 } from './utility-tools';
+import { gitTools } from './git-tools';
 import { FileSkill, WebSkill, CodeSkill } from './skills/base-skill';
 import { 
   DataAnalysisSkill, 
@@ -73,6 +75,11 @@ export function initializeTools(): ToolRegistry {
   registry.register(hashTool);
   registry.register(randomNumberTool);
   registry.register(colorTool);
+  
+  // 注册 Git 工具
+  for (const tool of gitTools) {
+    registry.register(tool);
+  }
   
   return registry;
 }

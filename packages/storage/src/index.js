@@ -14,4 +14,3 @@ export async function createStorage(dbPath) {
     };
 }
 export { DatabaseManager };
-//# sourceMappingURL=index.js.map

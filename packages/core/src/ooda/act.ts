@@ -1,6 +1,6 @@
 // packages/core/src/ooda/act.ts
 import { Decision, Action, ActionResult, ActionFeedback } from '../types';
-import { ToolRegistry } from '../../../tools/src/registry';
+import { UnifiedToolRegistryImpl } from '../tool/registry';
 import { SkillContext } from '../skill/interface';
 import { getSkillRegistry } from '../skill/registry';
 import { getMCPService } from '../mcp/service';
@@ -8,14 +8,14 @@ import { getPermissionManager, PermissionMode } from '../permission';
 
 export class Actor {
   private sessionId: string;
-  private toolRegistry: ToolRegistry;
+  private toolRegistry: UnifiedToolRegistryImpl;
   private skillRegistry = getSkillRegistry();
   private mcp = getMCPService();
   private permissionManager = getPermissionManager();
-  
-  constructor(sessionId: string, toolRegistry?: ToolRegistry) {
+
+  constructor(sessionId: string, toolRegistry?: UnifiedToolRegistryImpl) {
     this.sessionId = sessionId;
-    this.toolRegistry = toolRegistry || new ToolRegistry();
+    this.toolRegistry = toolRegistry || new UnifiedToolRegistryImpl();
   }
 
   async act(decision: Decision): Promise<ActionResult> {
@@ -285,6 +285,11 @@ export class Actor {
       if (otherOptions.length > 0) {
         feedback.suggestions.push(`备选方案: ${otherOptions.map(o => o.description).join(', ')}`);
       }
+      
+      // 启发式反馈：基于错误类型提供具体建议
+      const errorFeedback = this.generateHeuristicErrorFeedback(action, result);
+      feedback.suggestions.push(...errorFeedback.suggestions);
+      feedback.issues.push(...errorFeedback.issues);
     } else {
       feedback.observations.push('操作成功完成');
       
@@ -298,6 +303,11 @@ export class Actor {
             : JSON.stringify(resultData.result).slice(0, 200);
           feedback.newInformation.push(`结果摘要: ${resultStr}...`);
         }
+        
+        // 启发式反馈：基于工具类型提供额外信息
+        const heuristicFeedback = this.generateHeuristicSuccessFeedback(action, result);
+        feedback.observations.push(...heuristicFeedback.observations);
+        feedback.newInformation.push(...heuristicFeedback.newInformation);
       }
       
       const remainingSteps = decision.plan.subtasks.filter(t => t.status === 'pending').length;
@@ -306,9 +316,174 @@ export class Actor {
       } else if (remainingSteps === 0) {
         feedback.observations.push('所有计划步骤已完成');
       }
+      
+      // 启发式反馈：任务进度评估
+      const progressFeedback = this.generateProgressFeedback(decision);
+      if (progressFeedback) {
+        feedback.observations.push(progressFeedback);
+      }
     }
     
     return feedback;
+  }
+
+  /**
+   * 启发式错误反馈 - 基于错误类型提供具体建议
+   */
+  private generateHeuristicErrorFeedback(action: Action, result: unknown): { suggestions: string[]; issues: string[] } {
+    const suggestions: string[] = [];
+    const issues: string[] = [];
+    
+    const resultData = result as any;
+    const errorMessage = resultData?.result || resultData?.message || '';
+    const errorStr = String(errorMessage).toLowerCase();
+    
+    if (action.type === 'tool_call') {
+      // 文件相关错误
+      if (action.toolName === 'read_file' || action.toolName === 'write_file') {
+        if (errorStr.includes('not found') || errorStr.includes('不存在') || errorStr.includes('no such file')) {
+          issues.push('目标文件不存在');
+          suggestions.push('检查文件路径是否正确');
+          suggestions.push('使用 glob 工具查找正确的文件路径');
+        } else if (errorStr.includes('permission') || errorStr.includes('权限')) {
+          issues.push('文件权限不足');
+          suggestions.push('检查文件权限设置');
+          suggestions.push('尝试使用其他位置或请求权限');
+        } else if (errorStr.includes('too large') || errorStr.includes('过大')) {
+          issues.push('文件过大');
+          suggestions.push('尝试分块读取或使用 limit 参数');
+        }
+      }
+      
+      // 命令执行错误
+      if (action.toolName === 'run_bash') {
+        if (errorStr.includes('not found') || errorStr.includes('不是内部或外部命令')) {
+          issues.push('命令不存在');
+          suggestions.push('检查命令名称是否正确');
+          suggestions.push('确认相关工具已安装');
+        } else if (errorStr.includes('permission denied') || errorStr.includes('拒绝访问')) {
+          issues.push('命令执行权限不足');
+          suggestions.push('检查是否需要管理员权限');
+        } else if (errorStr.includes('timeout') || errorStr.includes('超时')) {
+          issues.push('命令执行超时');
+          suggestions.push('尝试简化命令或增加超时时间');
+        }
+      }
+      
+      // 搜索错误
+      if (action.toolName === 'search_web') {
+        if (errorStr.includes('network') || errorStr.includes('网络')) {
+          issues.push('网络连接问题');
+          suggestions.push('检查网络连接');
+          suggestions.push('稍后重试');
+        } else if (errorStr.includes('rate limit') || errorStr.includes('限制')) {
+          issues.push('请求频率限制');
+          suggestions.push('稍后重试');
+          suggestions.push('减少查询频率');
+        }
+      }
+    }
+    
+    return { suggestions, issues };
+  }
+
+  /**
+   * 启发式成功反馈 - 基于工具类型提供额外信息
+   */
+  private generateHeuristicSuccessFeedback(action: Action, result: unknown): { observations: string[]; newInformation: string[] } {
+    const observations: string[] = [];
+    const newInformation: string[] = [];
+    
+    const resultData = result as any;
+    
+    if (action.type === 'tool_call') {
+      // 文件读取成功
+      if (action.toolName === 'read_file') {
+        const content = resultData?.result;
+        if (typeof content === 'string') {
+          const lineCount = content.split('\n').length;
+          const charCount = content.length;
+          observations.push(`成功读取文件，共 ${lineCount} 行，${charCount} 字符`);
+          
+          // 检测文件类型
+          const path = action.args?.path as string;
+          if (path) {
+            if (path.endsWith('.json')) {
+              try {
+                JSON.parse(content);
+                newInformation.push('文件是有效的 JSON 格式');
+              } catch {
+                newInformation.push('文件不是有效的 JSON 格式');
+              }
+            } else if (path.endsWith('.ts') || path.endsWith('.js')) {
+              const importCount = (content.match(/import/g) || []).length;
+              const exportCount = (content.match(/export/g) || []).length;
+              newInformation.push(`代码文件包含 ${importCount} 个导入，${exportCount} 个导出`);
+            }
+          }
+        }
+      }
+      
+      // 文件写入成功
+      if (action.toolName === 'write_file') {
+        const path = action.args?.path as string;
+        const content = action.args?.content as string;
+        if (path && content) {
+          const size = new Blob([content]).size;
+          observations.push(`成功写入文件 ${path}，大小 ${size} 字节`);
+        }
+      }
+      
+      // 命令执行成功
+      if (action.toolName === 'run_bash') {
+        const output = resultData?.result;
+        if (typeof output === 'string') {
+          const lineCount = output.split('\n').length;
+          observations.push(`命令执行成功，输出 ${lineCount} 行`);
+        }
+      }
+      
+      // 搜索成功
+      if (action.toolName === 'search_web') {
+        const results = resultData?.result;
+        if (Array.isArray(results)) {
+          observations.push(`搜索完成，找到 ${results.length} 个结果`);
+        }
+      }
+    }
+    
+    return { observations, newInformation };
+  }
+
+  /**
+   * 启发式进度反馈 - 评估任务整体进度
+   */
+  private generateProgressFeedback(decision: Decision): string | null {
+    const totalTasks = decision.plan.subtasks.length;
+    const completedTasks = decision.plan.subtasks.filter(t => t.status === 'completed').length;
+    const failedTasks = decision.plan.subtasks.filter(t => t.status === 'failed').length;
+    
+    if (totalTasks === 0) return null;
+    
+    const progressPercent = Math.round((completedTasks / totalTasks) * 100);
+    
+    if (failedTasks > 0) {
+      return `任务进度: ${progressPercent}% (${completedTasks}/${totalTasks} 完成, ${failedTasks} 失败)`;
+    }
+    
+    if (progressPercent === 100) {
+      return '所有任务已完成';
+    }
+    
+    if (progressPercent >= 75) {
+      return `任务即将完成: ${progressPercent}%`;
+    }
+    
+    if (progressPercent >= 50) {
+      return `任务进度过半: ${progressPercent}%`;
+    }
+    
+    return `任务进行中: ${progressPercent}%`;
   }
 
   private isErrorResult(result: unknown): boolean {

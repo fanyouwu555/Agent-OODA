@@ -408,6 +408,7 @@ ${relevantFacts}
   private identifyConstraints(observation: Observation, analysis: AnalysisResult): Constraint[] {
     const constraints: Constraint[] = [];
     
+    // 资源约束
     if (observation.environment.resourceUsage.memory > 0.8) {
       constraints.push({
         type: 'resource',
@@ -430,6 +431,7 @@ ${relevantFacts}
       });
     }
     
+    // 错误约束
     const errorResults = observation.toolResults.filter(r => r.isError);
     if (errorResults.length > 0) {
       constraints.push({
@@ -439,11 +441,101 @@ ${relevantFacts}
       });
     }
     
+    // 风险约束
     for (const risk of analysis.risks) {
       constraints.push({
         type: 'logic',
         description: risk,
         severity: 'medium',
+      });
+    }
+    
+    // 新增启发式约束识别
+    constraints.push(...this.identifyHeuristicConstraints(observation, analysis));
+    
+    return constraints;
+  }
+
+  /**
+   * 启发式约束识别 - 基于模式识别额外的约束条件
+   */
+  private identifyHeuristicConstraints(observation: Observation, analysis: AnalysisResult): Constraint[] {
+    const constraints: Constraint[] = [];
+    
+    // 检测工作流约束
+    const workflowPattern = observation.patterns?.find(p => p.type === 'workflow');
+    if (workflowPattern) {
+      if (workflowPattern.description.includes('调试')) {
+        constraints.push({
+          type: 'logic',
+          description: '当前处于调试模式，需要谨慎修改',
+          severity: 'medium',
+        });
+      }
+      if (workflowPattern.description.includes('多文件')) {
+        constraints.push({
+          type: 'logic',
+          description: '多文件操作需要保持一致性',
+          severity: 'medium',
+        });
+      }
+    }
+    
+    // 检测复杂度约束
+    const complexityPattern = observation.patterns?.find(p => p.type === 'complexity');
+    if (complexityPattern && complexityPattern.significance > 0.8) {
+      constraints.push({
+        type: 'time',
+        description: '高复杂度任务可能需要更多时间',
+        severity: 'medium',
+      });
+    }
+    
+    // 检测上下文切换约束
+    const contextSwitchPattern = observation.patterns?.find(p => p.type === 'context_switch');
+    if (contextSwitchPattern) {
+      constraints.push({
+        type: 'logic',
+        description: '用户频繁切换话题，需要确认当前焦点',
+        severity: 'low',
+      });
+    }
+    
+    // 检测连续失败约束
+    const consecutiveFailures = observation.anomalies?.find(a => 
+      a.type === 'error' && a.description.includes('连续失败')
+    );
+    if (consecutiveFailures) {
+      constraints.push({
+        type: 'logic',
+        description: '连续失败多次，建议改变策略或请求帮助',
+        severity: 'high',
+      });
+    }
+    
+    // 基于意图类型的约束
+    const intent = analysis.intentType;
+    if (intent === 'file_write') {
+      constraints.push({
+        type: 'permission',
+        description: '文件写入操作需要确认权限',
+        severity: 'medium',
+      });
+    } else if (intent === 'execute') {
+      constraints.push({
+        type: 'permission',
+        description: '命令执行可能存在安全风险',
+        severity: 'high',
+      });
+    }
+    
+    // 基于历史长度的约束
+    const historyLength = observation.history.length;
+    if (historyLength > 30) {
+      constraints.push({
+        type: 'time',
+        description: '长对话历史，建议总结上下文',
+        severity: 'low',
       });
     }
     

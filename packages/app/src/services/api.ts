@@ -8,6 +8,79 @@ import type {
 
 const API_BASE = '/api';
 
+// Logger utility for frontend
+class FrontendLogger {
+  private enabled: boolean;
+
+  constructor() {
+    this.enabled = import.meta.env.DEV || localStorage.getItem('DEBUG_API') === 'true';
+  }
+
+  private formatMessage(level: string, category: string, message: string, data?: unknown): string {
+    const timestamp = new Date().toISOString();
+    const dataStr = data ? ` ${JSON.stringify(data, null, 2)}` : '';
+    return `[${timestamp}] [${level}] [${category}] ${message}${dataStr}`;
+  }
+
+  private getColor(level: string): string {
+    const colors: Record<string, string> = {
+      debug: '#00bcd4',
+      info: '#4caf50',
+      warn: '#ff9800',
+      error: '#f44336',
+    };
+    return colors[level] || '#999';
+  }
+
+  log(level: string, category: string, message: string, data?: unknown): void {
+    if (!this.enabled) return;
+
+    const style = `color: ${this.getColor(level)}; font-weight: bold;`;
+    const prefix = `%c[${level.toUpperCase()}] [${category}]`;
+
+    if (level === 'error') {
+      console.error(prefix, style, message, data || '');
+    } else if (level === 'warn') {
+      console.warn(prefix, style, message, data || '');
+    } else {
+      console.log(prefix, style, message, data || '');
+    }
+  }
+
+  request(method: string, url: string, body?: unknown): void {
+    this.log('debug', 'API Request', `${method} ${url}`, {
+      body: this.truncateData(body),
+      timestamp: Date.now(),
+    });
+  }
+
+  response(method: string, url: string, status: number, duration: number, data?: unknown): void {
+    const level = status >= 400 ? 'error' : status >= 300 ? 'warn' : 'info';
+    this.log(level, 'API Response', `${method} ${url} - ${status} (${duration}ms)`, {
+      status,
+      duration,
+      data: this.truncateData(data),
+    });
+  }
+
+  sse(event: string, data?: unknown): void {
+    this.log('debug', 'SSE', `Event: ${event}`, this.truncateData(data));
+  }
+
+  websocket(type: 'connect' | 'disconnect' | 'send' | 'receive' | 'error', data?: unknown): void {
+    this.log('debug', 'WebSocket', type, this.truncateData(data));
+  }
+
+  private truncateData(data: unknown, maxLength: number = 500): unknown {
+    if (!data) return data;
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    if (str.length <= maxLength) return data;
+    return str.substring(0, maxLength) + `... (${str.length - maxLength} more chars)`;
+  }
+}
+
+const logger = new FrontendLogger();
+
 export class ApiClient {
   private baseUrl: string;
 
@@ -19,8 +92,23 @@ export class ApiClient {
     path: string,
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
+    const startTime = Date.now();
+    const url = `${this.baseUrl}${path}`;
+    const method = options.method || 'GET';
+
+    // Log request
+    let requestBody: unknown;
+    if (options.body) {
+      try {
+        requestBody = JSON.parse(options.body as string);
+      } catch {
+        requestBody = options.body;
+      }
+    }
+    logger.request(method, url, requestBody);
+
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
           ...options.headers,
@@ -28,17 +116,24 @@ export class ApiClient {
         ...options,
       });
 
+      const duration = Date.now() - startTime;
+
       if (!response.ok) {
         const error = await response.text();
+        logger.response(method, url, response.status, duration, { error });
         return { success: false, error };
       }
 
       const data = await response.json();
+      logger.response(method, url, response.status, duration, data);
       return { success: true, data };
     } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.response(method, url, 0, duration, { error: errorMessage });
       return { 
         success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
+        error: errorMessage 
       };
     }
   }
@@ -62,13 +157,20 @@ export class ApiClient {
     message: string,
     onEvent: (event: SSEEvent) => void
   ): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
+    const startTime = Date.now();
+    const url = `${this.baseUrl}/session/${sessionId}/message`;
+
+    logger.request('POST', url, { message: message.substring(0, 100) + (message.length > 100 ? '...' : '') });
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
     });
 
     if (!response.ok) {
+      const duration = Date.now() - startTime;
+      logger.response('POST', url, response.status, duration, { error: response.statusText });
       onEvent({ 
         type: 'error', 
         content: `HTTP ${response.status}: ${response.statusText}` 
@@ -84,6 +186,7 @@ export class ApiClient {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventCount = 0;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -99,6 +202,16 @@ export class ApiClient {
           if (data) {
             try {
               const event: SSEEvent = JSON.parse(data);
+              eventCount++;
+              
+              // Log first few events and errors
+              if (eventCount <= 3 || event.type === 'error' || event.type === 'complete') {
+                logger.sse(event.type, { 
+                  content: event.content?.substring(0, 100),
+                  sessionId: event.sessionId 
+                });
+              }
+              
               onEvent(event);
             } catch (e) {
               console.warn('Failed to parse SSE event:', data);
@@ -107,6 +220,9 @@ export class ApiClient {
         }
       }
     }
+
+    const duration = Date.now() - startTime;
+    logger.log('info', 'SSE', `Stream completed with ${eventCount} events`, { duration });
   }
 
   async getSkills(): Promise<ApiResponse<Skill[]>> {
@@ -278,3 +394,6 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+// Export logger for use in other services
+export { logger };

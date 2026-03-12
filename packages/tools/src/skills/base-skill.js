@@ -1,0 +1,227 @@
+// packages/tools/src/skills/base-skill.ts
+import { z } from 'zod';
+// 基础技能类
+export class BaseSkill {
+    async initialize() {
+        // 基础初始化逻辑
+        console.log(`Initializing skill: ${this.name}`);
+    }
+    async shutdown() {
+        // 基础关闭逻辑
+        console.log(`Shutting down skill: ${this.name}`);
+    }
+}
+// 文件操作技能
+export class FileSkill extends BaseSkill {
+    name = 'file_skill';
+    description = '文件操作技能';
+    category = 'file';
+    version = '1.0.0';
+    dependencies = [];
+    schema = z.object({
+        action: z.enum(['read', 'write', 'list']),
+        path: z.string().describe('文件路径'),
+        content: z.string().optional().describe('文件内容'),
+    });
+    permissions = [
+        { type: 'file_read', pattern: '**/*' },
+        { type: 'file_write', pattern: '**/*' },
+    ];
+    async execute(input, context) {
+        const { action, path, content } = input;
+        switch (action) {
+            case 'read':
+                return this.readFile(path, context);
+            case 'write':
+                return this.writeFile(path, content, context);
+            case 'list':
+                return this.listFiles(path, context);
+            default:
+                throw new Error(`Unknown action: ${action}`);
+        }
+    }
+    async readFile(path, context) {
+        // 安全检查
+        if (!path.startsWith(context.workingDirectory)) {
+            throw new Error('权限不足：无法访问工作目录外的文件');
+        }
+        // 模拟文件读取
+        return {
+            action: 'read',
+            path,
+            content: `文件内容: ${path}`,
+            success: true,
+        };
+    }
+    async writeFile(path, content, context) {
+        // 安全检查
+        if (!path.startsWith(context.workingDirectory)) {
+            throw new Error('权限不足：无法写入工作目录外的文件');
+        }
+        // 模拟文件写入
+        return {
+            action: 'write',
+            path,
+            success: true,
+        };
+    }
+    async listFiles(path, context) {
+        // 安全检查
+        if (!path.startsWith(context.workingDirectory)) {
+            throw new Error('权限不足：无法访问工作目录外的文件');
+        }
+        // 模拟文件列表
+        return {
+            action: 'list',
+            path,
+            files: ['file1.txt', 'file2.txt', 'dir1'],
+            success: true,
+        };
+    }
+}
+// 网络搜索技能
+export class WebSkill extends BaseSkill {
+    name = 'web_skill';
+    description = '网络搜索和网页抓取技能';
+    category = 'web';
+    version = '2.0.0';
+    dependencies = [];
+    schema = z.object({
+        action: z.enum(['search', 'fetch', 'search_and_fetch']),
+        query: z.string().optional().describe('搜索关键词'),
+        url: z.string().optional().describe('网页URL'),
+        limit: z.number().optional().describe('结果数量限制'),
+        fetchContent: z.boolean().optional().describe('是否抓取内容'),
+    });
+    permissions = [
+        { type: 'network', pattern: '**' },
+    ];
+    async execute(input, context) {
+        const { action, query, url, limit, fetchContent } = input;
+        switch (action) {
+            case 'search':
+                return this.searchWeb(query, limit || 5, context);
+            case 'fetch':
+                return this.fetchWeb(url, context);
+            case 'search_and_fetch':
+                return this.searchAndFetch(query, limit || 3, fetchContent || false, context);
+            default:
+                throw new Error(`Unknown action: ${action}`);
+        }
+    }
+    async searchWeb(query, limit, context) {
+        const { webSearch } = await import('../web-tools');
+        try {
+            const results = await webSearch(query, limit);
+            return {
+                action: 'search',
+                query,
+                results,
+                success: true,
+            };
+        }
+        catch (error) {
+            return {
+                action: 'search',
+                query,
+                results: [],
+                error: error.message,
+                success: false,
+            };
+        }
+    }
+    async fetchWeb(url, context) {
+        const { webFetch } = await import('../web-tools');
+        try {
+            const result = await webFetch(url);
+            return {
+                action: 'fetch',
+                url,
+                title: result.title,
+                content: result.content,
+                statusCode: result.statusCode,
+                success: true,
+            };
+        }
+        catch (error) {
+            return {
+                action: 'fetch',
+                url,
+                error: error.message,
+                success: false,
+            };
+        }
+    }
+    async searchAndFetch(query, limit, fetchContent, context) {
+        const { webSearch, webFetch } = await import('../web-tools');
+        try {
+            const results = await webSearch(query, limit);
+            if (fetchContent) {
+                const enrichedResults = await Promise.all(results.map(async (result) => {
+                    try {
+                        const fetched = await webFetch(result.url);
+                        return {
+                            ...result,
+                            content: fetched.content.substring(0, 2000),
+                        };
+                    }
+                    catch {
+                        return result;
+                    }
+                }));
+                return {
+                    action: 'search_and_fetch',
+                    query,
+                    results: enrichedResults,
+                    success: true,
+                };
+            }
+            return {
+                action: 'search_and_fetch',
+                query,
+                results,
+                success: true,
+            };
+        }
+        catch (error) {
+            return {
+                action: 'search_and_fetch',
+                query,
+                results: [],
+                error: error.message,
+                success: false,
+            };
+        }
+    }
+}
+// 代码执行技能
+export class CodeSkill extends BaseSkill {
+    name = 'code_skill';
+    description = '代码执行技能';
+    category = 'code';
+    version = '1.0.0';
+    dependencies = [];
+    schema = z.object({
+        language: z.enum(['javascript', 'python', 'bash']),
+        code: z.string().describe('代码内容'),
+        timeout: z.number().optional().default(30000).describe('执行超时时间'),
+    });
+    permissions = [
+        { type: 'exec', pattern: '**' },
+    ];
+    async execute(input, context) {
+        const { language, code, timeout } = input;
+        // 安全检查
+        const dangerousPatterns = ['rm -rf', 'format', 'shutdown'];
+        if (dangerousPatterns.some(pattern => code.includes(pattern))) {
+            throw new Error('禁止执行危险代码');
+        }
+        // 模拟代码执行
+        return {
+            language,
+            code: code.substring(0, 100) + (code.length > 100 ? '...' : ''),
+            output: `执行结果: ${language}代码执行成功`,
+            success: true,
+        };
+    }
+}

@@ -3,11 +3,14 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(process.cwd(), '.env') });
 config({ path: resolve(process.cwd(), '..', '..', '.env') });
+
 import { Hono } from 'hono';
 import { sessionRoutes, handleWebSocketMessage, cleanupWebSocket, setupHeartbeat } from './routes/session';
 import { authRoutes } from './routes/auth';
 import { cors } from 'hono/cors';
 import { apiRateLimit } from './middleware/rate-limit';
+import { requestLogger } from './middleware/logger';
+import { logger } from './utils/logger';
 import { initializeSkills } from '@ooda-agent/tools';
 import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
@@ -45,27 +48,27 @@ async function loadConfig() {
     try {
       const content = await fs.readFile(configPath, 'utf-8');
       const config = JSON.parse(content);
-      console.log(`[Config] Loaded from: ${configPath}`);
-      console.log(`[Config] Active provider: ${config.activeProvider}`);
+      logger.info('Config', `Loaded from: ${configPath}`, { activeProvider: config.activeProvider });
       return config;
     } catch (e) {
       // Continue to next path
     }
   }
   
-  console.log('[Config] Using default configuration');
+  logger.info('Config', 'Using default configuration');
   return undefined;
 }
 
 async function main() {
-  const config = await loadConfig();
-  if (config) {
-    initializeConfigManager(config);
+  const appConfig = await loadConfig();
+  if (appConfig) {
+    initializeConfigManager(appConfig);
     const activeModel = getConfigManager().getActiveModelInfo();
-    console.log(`[Config] Active model: ${activeModel.provider}/${activeModel.model}`);
+    logger.info('Config', `Active model: ${activeModel.provider}/${activeModel.model}`);
   }
   
   initializeSkills();
+  logger.info('Skills', 'Skills initialized successfully');
 
   const dataDir = path.join(process.cwd(), 'data');
   try {
@@ -75,34 +78,41 @@ async function main() {
   }
   
   const dbPath = path.join(dataDir, 'agent.db');
-  console.log(`[Storage] Initializing database at: ${dbPath}`);
+  logger.info('Storage', `Initializing database at: ${dbPath}`);
   
   const storage = await createStorage(dbPath);
-  console.log('[Storage] Database initialized');
+  logger.info('Storage', 'Database initialized');
   
   const enableEmbedding = process.env.ENABLE_EMBEDDING !== 'false';
   initializeMemorySystem(storage.memories, enableEmbedding);
-  console.log(`[Memory] Memory system initialized (embedding: ${enableEmbedding})`);
+  logger.info('Memory', `Memory system initialized (embedding: ${enableEmbedding})`);
   
   const personaManager = initializePersonaManager(storage.memories);
   await personaManager.loadDefaultPersona();
-  console.log('[Memory] Default persona loaded');
+  logger.info('Memory', 'Default persona loaded');
 
   const mcp = getMCPService();
 
   mcp.subscribe('agent.response', (message) => {
-    const payload = message.payload as { content?: string };
-    console.log(`[Server] Agent response: ${payload.content || 'No content'}`);
+    const payload = message.payload as { content?: string; sessionId?: string };
+    logger.info('MCP', 'Agent response', { 
+      sessionId: payload.sessionId,
+      content: payload.content?.substring(0, 200) 
+    });
   });
 
   mcp.subscribe('skill.executed', (message) => {
-    const payload = message.payload as { skillName?: string };
-    console.log(`[Server] Skill executed: ${payload.skillName || 'Unknown'}`);
+    const payload = message.payload as { skillName?: string; result?: unknown };
+    logger.info('MCP', 'Skill executed', { skillName: payload.skillName, result: payload.result });
   });
 
   mcp.subscribe('tool.executed', (message) => {
-    const payload = message.payload as { toolName?: string };
-    console.log(`[Server] Tool executed: ${payload.toolName || 'Unknown'}`);
+    const payload = message.payload as { toolName?: string; args?: unknown; result?: unknown };
+    logger.info('MCP', 'Tool executed', { 
+      toolName: payload.toolName, 
+      args: payload.args,
+      result: payload.result 
+    });
   });
 
   const app = new Hono();
@@ -125,13 +135,15 @@ async function main() {
     maxAge: 86400,
   }));
 
+  // Add request logging middleware
+  app.use('*', requestLogger);
   app.use('/api/*', apiRateLimit);
 
   app.route('/api/auth', authRoutes);
   app.route('/api', sessionRoutes);
 
   app.get('/health', (c) => {
-    console.log('[Health] Health check requested');
+    logger.debug('Health', 'Health check requested');
     return c.json({ 
       status: 'ok', 
       timestamp: Date.now(),
@@ -142,7 +154,7 @@ async function main() {
   });
 
   app.get('/api/skills', (c) => {
-    console.log('[Skills] Skills list requested');
+    logger.debug('Skills', 'Skills list requested');
     const skills = getSkillRegistry().list();
     return c.json(skills.map(skill => ({
       name: skill.name,
@@ -155,35 +167,67 @@ async function main() {
   const PORT = await findAvailablePort(Number(process.env.PORT) || 3000);
 
   const server = createServer(async (req, res) => {
-    console.log(`[Request] ${req.method} ${req.url}`);
-    
     if (req.url === '/ws' || req.url?.startsWith('/ws?')) {
       return;
     }
     
+    const startTime = Date.now();
+    const method = req.method || 'GET';
+    const url = req.url || '/';
+    
     try {
-      const url = `http://localhost:${PORT}${req.url}`;
+      const requestUrl = `http://localhost:${PORT}${url}`;
       
       let body: string | undefined;
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
+      if (method !== 'GET' && method !== 'HEAD') {
         const chunks: Buffer[] = [];
         for await (const chunk of req) {
           chunks.push(chunk);
         }
         body = Buffer.concat(chunks).toString();
       }
+
+      // Log raw HTTP request
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === 'string') {
+          headers[key] = value;
+        }
+      }
       
-      const request = new Request(url, {
-        method: req.method,
-        headers: req.headers as HeadersInit,
+      let parsedBody: unknown = undefined;
+      if (body) {
+        try {
+          parsedBody = JSON.parse(body);
+        } catch {
+          parsedBody = body;
+        }
+      }
+      
+      logger.logRequest(method, url, headers, parsedBody);
+      
+      const request = new Request(requestUrl, {
+        method: method,
+        headers: headers as HeadersInit,
         body: body,
       });
       
       const response = await app.fetch(request);
       
-      console.log(`[Response] Status: ${response.status}`);
-      res.statusCode = response.status;
+      const duration = Date.now() - startTime;
       
+      // Log response
+      let responseBody: unknown = undefined;
+      try {
+        const clonedRes = response.clone();
+        responseBody = await clonedRes.json();
+      } catch {
+        // Not JSON response
+      }
+      
+      logger.logResponse(method, url, response.status, duration, responseBody);
+      
+      res.statusCode = response.status;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       
       response.headers.forEach((value, key) => {
@@ -195,7 +239,12 @@ async function main() {
       const buffer = await response.arrayBuffer();
       res.end(Buffer.from(buffer));
     } catch (error) {
-      console.error('[Error] Server error:', error);
+      const duration = Date.now() - startTime;
+      logger.error('HTTP', `${method} ${url} failed`, { 
+        error: error instanceof Error ? error.message : String(error),
+        duration 
+      });
+      
       const isDev = process.env.NODE_ENV !== 'production';
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
@@ -210,23 +259,37 @@ async function main() {
   const wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (ws: WebSocket, request) => {
-    console.log('[WebSocket] Client connected');
+    const clientIp = request.socket.remoteAddress;
+    logger.logWebSocket('connect', { clientIp });
     
     setupHeartbeat(ws);
     
     ws.on('message', (data: Buffer) => {
       const message = data.toString();
-      console.log(`[WebSocket] Received: ${message.substring(0, 100)}...`);
+      let parsedMessage: unknown;
+      try {
+        parsedMessage = JSON.parse(message);
+      } catch {
+        parsedMessage = message.substring(0, 200);
+      }
+      logger.logWebSocket('message', { 
+        clientIp,
+        message: parsedMessage 
+      });
       handleWebSocketMessage(ws as any, message);
     });
     
-    ws.on('close', () => {
-      console.log('[WebSocket] Client disconnected');
+    ws.on('close', (code, reason) => {
+      logger.logWebSocket('disconnect', { 
+        clientIp, 
+        code, 
+        reason: reason.toString() 
+      });
       cleanupWebSocket(ws as any);
     });
     
     ws.on('error', (error) => {
-      console.error('[WebSocket] Error:', error);
+      logger.logWebSocket('error', { clientIp, error: error.message });
       cleanupWebSocket(ws as any);
     });
     
@@ -250,25 +313,28 @@ async function main() {
   });
 
   server.on('error', (error) => {
-    console.error('[Server] Server error:', error);
+    logger.error('Server', 'Server error', { error: error.message });
   });
 
   server.listen(Number(PORT), () => {
-    console.log(`Server running on port ${PORT}`);
+    logger.info('Server', `Server running on port ${PORT}`);
     if (PORT !== 3000) {
-      console.log(`\x1b[33m[Warning] Port 3000 was in use, using port ${PORT} instead.\x1b[0m`);
-      console.log(`\x1b[33m[Warning] You may need to update vite.config.ts proxy target to http://localhost:${PORT}\x1b[0m`);
+      logger.warn('Server', `Port 3000 was in use, using port ${PORT} instead`);
+      logger.warn('Server', `You may need to update vite.config.ts proxy target to http://localhost:${PORT}`);
     }
-    console.log('Skills initialized successfully');
-    console.log('MCP service started');
-    console.log('WebSocket server enabled');
-    console.log(`Health check: http://localhost:${PORT}/health`);
-    console.log(`Skills list: http://localhost:${PORT}/api/skills`);
-    console.log(`WebSocket: ws://localhost:${PORT}/ws`);
+    logger.info('Server', 'MCP service started');
+    logger.info('Server', 'WebSocket server enabled');
+    logger.info('Server', `Health check: http://localhost:${PORT}/health`);
+    logger.info('Server', `Skills list: http://localhost:${PORT}/api/skills`);
+    logger.info('Server', `WebSocket: ws://localhost:${PORT}/ws`);
+    
+    if (logger.getLogFilePath()) {
+      logger.info('Server', `Log file: ${logger.getLogFilePath()}`);
+    }
   });
 }
 
 main().catch((error) => {
-  console.error('[Fatal] Unhandled error:', error);
+  logger.error('Fatal', 'Unhandled error', { error: error.message, stack: error.stack });
   process.exit(1);
 });

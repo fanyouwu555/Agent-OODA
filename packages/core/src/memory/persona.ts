@@ -57,17 +57,22 @@ export class PersonaManager {
     }
 
     for (const memory of persona.memories) {
-      await this.longTermMemory.store({
-        content: memory.content,
-        embedding: [],
-        metadata: {
-          type: memory.type,
-          source: memory.source || `persona:${personaId}`,
-          tags: [...(persona.defaultTags || []), ...(memory.tags || [])],
-          related: [],
-        },
-        importance: memory.importance ?? 0.8,
-      });
+      try {
+        await this.longTermMemory.store({
+          content: memory.content,
+          embedding: [],
+          metadata: {
+            type: memory.type,
+            source: memory.source || `persona:${personaId}`,
+            tags: [...(persona.defaultTags || []), ...(memory.tags || [])],
+            related: [],
+          },
+          importance: memory.importance ?? 0.8,
+        });
+      } catch (error) {
+        console.warn(`[PersonaManager] Failed to store memory for persona ${personaId}:`, error);
+        // 继续加载其他记忆
+      }
     }
 
     this.loadedPersonas.add(personaId);

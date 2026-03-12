@@ -1,5 +1,6 @@
 import { createSignal, onCleanup } from 'solid-js';
 import type { WebSocketMessage, ConfirmationRequest, ToolCall } from '../types';
+import { logger } from './api';
 
 export interface WebSocketClientOptions {
   url: string;
@@ -29,7 +30,9 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
     const interval = options.heartbeatInterval || 25000;
     heartbeatTimer = setInterval(() => {
       if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
+        const pingMessage = { type: 'ping' };
+        ws.send(JSON.stringify(pingMessage));
+        logger.websocket('send', { type: 'ping' });
       }
     }, interval);
   };
@@ -46,20 +49,31 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = options.url.startsWith('ws') ? options.url : `${protocol}//${window.location.host}${options.url}`;
+      // 支持从环境变量获取 WebSocket 端口
+      const wsPort = import.meta.env.VITE_WS_PORT || '3000';
+      const wsHost = window.location.hostname;
+      const wsUrl = options.url.startsWith('ws') 
+        ? options.url 
+        : `${protocol}//${wsHost}:${wsPort}${options.url}`;
       
+      logger.websocket('connect', { url: wsUrl });
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('[WebSocket] Connected');
+        logger.websocket('connect', { url: wsUrl, status: 'connected' });
         setIsConnected(true);
         reconnectAttempts = 0;
         startHeartbeat();
         options.onOpen?.();
       };
 
-      ws.onclose = () => {
-        console.log('[WebSocket] Disconnected');
+      ws.onclose = (event) => {
+        logger.websocket('disconnect', { 
+          url: wsUrl, 
+          code: event.code, 
+          reason: event.reason,
+          wasClean: event.wasClean 
+        });
         const wasConnected = isConnected();
         setIsConnected(false);
         stopHeartbeat();
@@ -70,30 +84,49 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 
         if (options.reconnect && reconnectAttempts < (options.maxReconnectAttempts || 5)) {
           reconnectAttempts++;
-          console.log(`[WebSocket] Reconnecting... Attempt ${reconnectAttempts}`);
+          logger.websocket('connect', { 
+            url: wsUrl, 
+            status: 'reconnecting', 
+            attempt: reconnectAttempts 
+          });
           reconnectTimeout = setTimeout(connect, options.reconnectInterval || 3000);
         }
       };
 
       ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
+        logger.websocket('error', { url: wsUrl, error: 'WebSocket error occurred' });
         options.onError?.(error);
       };
 
       ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
+          
+          // Don't log ping/pong messages to reduce noise
           if (message.type === 'pong') {
             return;
           }
+          
+          logger.websocket('receive', { 
+            type: message.type, 
+            payload: message.payload 
+          });
+          
           setLastMessage(message);
           options.onMessage?.(message);
         } catch (e) {
-          console.error('[WebSocket] Failed to parse message:', e);
+          logger.websocket('error', { 
+            url: wsUrl, 
+            error: 'Failed to parse message', 
+            data: event.data?.substring(0, 200) 
+          });
         }
       };
     } catch (error) {
-      console.error('[WebSocket] Connection failed:', error);
+      logger.websocket('error', { 
+        url: options.url, 
+        error: error instanceof Error ? error.message : 'Connection failed' 
+      });
     }
   };
 
@@ -105,14 +138,19 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
     ws?.close();
     ws = null;
     setIsConnected(false);
+    logger.websocket('disconnect', { status: 'manual' });
   };
 
   const send = (message: WebSocketMessage) => {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
+      logger.websocket('send', message);
       return true;
     }
-    console.warn('[WebSocket] Cannot send message - not connected');
+    logger.websocket('error', { 
+      error: 'Cannot send message - not connected',
+      messageType: message.type 
+    });
     return false;
   };
 

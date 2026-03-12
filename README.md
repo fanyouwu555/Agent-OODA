@@ -1,151 +1,197 @@
-# OODA Agent 项目
+# OODA Agent
 
-基于 OODA 循环和 ReAct 框架的 AI Agent 项目，借鉴 Manus 的 PEV 架构设计。
+基于 OODA 循环和 ReAct 框架的 AI Agent 系统，借鉴 Manus 的 PEV 架构设计。
 
-## 技术架构
+## 功能特性
 
-- **核心引擎**：OODA 循环（观察-判断-决策-行动）
-- **多Agent协作**：Planning-Execution-Verification 架构
-- **工具系统**：可扩展的工具生态
-- **服务端**：Hono API 框架
-- **前端**：SolidJS 响应式应用
+- **OODA 循环**: 完整的观察-定向-决策-行动循环
+- **多 Agent 协作**: Planning-Execution-Verification 三层架构
+- **工具系统**: 可扩展的工具生态（文件、网络、代码等）
+- **记忆系统**: 短期记忆 + 长期记忆 + 向量检索
+- **权限系统**: 三级权限模式（allow/deny/ask）
+- **流式输出**: 实时显示处理进度和思考过程
+- **本地模型**: 支持 Ollama 本地部署
+
+## 技术栈
+
+- **语言**: TypeScript
+- **运行时**: Node.js 18+
+- **后端**: Hono API 框架
+- **前端**: SolidJS + Vite
+- **数据库**: SQLite
+- **验证**: Zod
+
+## 快速开始
+
+### 安装
+
+```bash
+# 克隆项目
+git clone https://github.com/your-repo/ooda-agent.git
+cd ooda-agent
+
+# 安装依赖
+npm install
+
+# 构建项目
+npm run build
+```
+
+### 配置
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env 文件，填入必要的配置
+```
+
+### 启动
+
+```bash
+# 同时启动前后端
+npm run dev
+
+# 或分别启动
+npm run dev:server  # 后端 http://localhost:3000
+npm run dev:app     # 前端 http://localhost:5173
+```
 
 ## 项目结构
 
 ```
 AgentProject/
-├── config/              # 配置文件
-│   └── example.json     # 示例配置
-├── dist/                # 构建输出
-├── docs/                # 文档
-│   ├── api-documentation.md  # API文档
-│   ├── ollama-qianwen3-guide.md  # Ollama指南
-│   ├── plans/           # 计划文档
-│   ├── status/          # 状态文档
-│   ├── summary/         # 总结文档
-│   └── user-guide.md    # 用户指南
-├── packages/            # 包
-│   ├── app/            # 前端应用
-│   │   └── src/
-│   │       ├── components/  # 组件
-│   │       ├── App.tsx      # 主应用
-│   │       └── main.tsx     # 入口
-│   ├── core/           # 核心包
-│   │   └── src/
-│   │       ├── config/      # 配置系统
-│   │       ├── error/       # 错误处理
-│   │       ├── llm/         # LLM集成
-│   │       ├── mcp/         # MCP系统
-│   │       ├── memory/      # 记忆系统
-│   │       ├── ooda/        # OODA循环
-│   │       ├── permission/  # 权限系统
-│   │       ├── skill/       # 技能系统
-│   │       └── types/       # 类型定义
-│   ├── server/         # 服务器包
-│   │   └── src/
-│   │       ├── routes/      # API路由
-│   │       └── index.ts     # 服务入口
-│   └── tools/          # 工具包
-│       └── src/
-│           ├── skills/      # 技能实现
-│           ├── base-tool.ts # 基础工具
-│           └── registry.ts  # 工具注册
-├── tests/               # 测试
-│   ├── integration/    # 集成测试
-│   └── unit/           # 单元测试
-├── .gitignore          # Git忽略文件
-├── package.json        # 项目配置
-├── tsconfig.json       # TypeScript配置
-└── README.md           # 项目说明
+├── config/                 # 配置文件
+├── docs/                   # 文档
+│   ├── architecture/       # 架构设计
+│   ├── guides/             # 使用指南
+│   ├── api/                # API 文档
+│   └── development/        # 开发文档
+├── packages/               # 核心包
+│   ├── core/               # 核心逻辑（OODA、LLM、记忆等）
+│   ├── server/             # 后端服务
+│   ├── app/                # 前端应用
+│   ├── tools/              # 工具实现
+│   └── storage/            # 数据存储
+├── scripts/                # 脚本工具
+└── tests/                  # 测试
 ```
-
-## 核心功能
-
-1. **OODA 循环**：完整实现观察、判断、决策、行动四个阶段
-2. **多Agent协作**：规划、执行、验证三层架构
-3. **工具系统**：支持文件操作、命令执行、网络搜索等
-4. **权限系统**：三级权限模式（allow/deny/ask）
-5. **配置系统**：支持文件和环境变量配置
-6. **错误处理**：完善的错误处理机制
-7. **记忆系统**：短期和长期记忆管理
-
-## 快速开始
-
-### 1. 安装依赖
-
-```bash
-npm install --registry=https://registry.npmmirror.com
-```
-
-### 2. 配置项目
-
-复制示例配置文件：
-```bash
-cp config/example.json ~/.config/ooda-agent/config.json
-```
-
-### 3. 启动服务端
-
-```bash
-npm run dev:server
-```
-
-### 4. 启动前端
-
-```bash
-npm run dev:app
-```
-
-### 5. 访问应用
-
-打开浏览器访问：http://localhost:5173
-
-## API 接口
-
-- **GET /health** - 健康检查
-- **GET /api/skills** - 获取技能列表
-- **POST /api/session** - 创建会话
-- **POST /api/session/:id/message** - 发送消息
-- **GET /api/session/:id/history** - 获取历史记录
-
-## 工具列表
-
-### 基础工具
-- **read_file** - 读取文件内容
-- **write_file** - 写入文件内容
-- **run_bash** - 执行bash命令
-- **search_web** - 搜索网络信息
-
-### 高级技能
-- **data_analysis** - 数据分析
-- **image_processing** - 图像处理
-- **pdf_processing** - PDF处理
-- **code_analysis** - 代码分析
-- **api_test** - API测试
-- **database_query** - 数据库查询
-
-## 技术栈
-
-- **语言**：TypeScript
-- **运行时**：Node.js
-- **Web框架**：Hono
-- **前端**：SolidJS
-- **验证**：Zod
-- **构建**：TypeScript + Vite
-
-## 设计理念
-
-1. **OODA-ReAct融合**：结合OODA循环的决策模型和ReAct的推理-行动模式
-2. **多Agent协作**：借鉴Manus的PEV架构，实现任务的分解和验证
-3. **权限系统**：三级权限模式，确保安全性
-4. **配置系统**：灵活的配置管理，支持多种环境
-5. **可扩展性**：模块化设计，支持工具和Agent的扩展
 
 ## 文档
 
-- [API文档](docs/api-documentation.md)
-- [用户指南](docs/user-guide.md)
-- [Ollama指南](docs/ollama-qianwen3-guide.md)
+- [快速开始](docs/guides/quickstart.md)
+- [用户指南](docs/guides/user-guide.md)
+- [API 文档](docs/api/README.md)
+- [记忆系统](docs/guides/memory-system.md)
+- [流式输出](docs/guides/streaming.md)
+- [Ollama 部署](docs/guides/ollama-setup.md)
+- [架构设计](docs/architecture/ooda-agents.md)
+
+## 核心概念
+
+### OODA 循环
+
+```
+┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
+│ Observe │───▶│ Orient  │───▶│ Decide  │───▶│   Act   │
+│  观察    │    │  定向    │    │  决策    │    │  行动    │
+└─────────┘    └─────────┘    └─────────┘    └─────────┘
+```
+
+### 工具系统
+
+| 工具 | 功能 |
+|------|------|
+| `read_file` | 读取文件内容 |
+| `write_file` | 写入文件内容 |
+| `run_bash` | 执行 bash 命令 |
+| `search_web` | 搜索网络信息 |
+| `data_analysis` | 数据分析 |
+| `image_processing` | 图像处理 |
+| `pdf_processing` | PDF 处理 |
+
+### 权限模式
+
+| 模式 | 说明 |
+|------|------|
+| `allow` | 自动允许 |
+| `ask` | 需要用户确认 |
+| `deny` | 自动拒绝 |
+
+## 示例
+
+### 文件操作
+
+```
+读取文件：/path/to/file.txt
+写入文件：/path/to/file.txt，内容：Hello World
+```
+
+### 网络搜索
+
+```
+搜索：AI Agent 最新进展
+```
+
+### 代码执行
+
+```
+执行代码：
+```python
+print("Hello, World!")
+```
+```
+
+## 开发
+
+```bash
+# 运行测试
+npm test
+
+# 代码检查
+npm run lint
+
+# 类型检查
+npm run typecheck
+```
+
+## 配置本地模型
+
+### 安装 Ollama
+
+```bash
+# macOS/Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Windows: 下载安装包 https://ollama.com/download
+```
+
+### 拉取模型
+
+```bash
+ollama pull qwen3:8b
+```
+
+### 配置项目
+
+编辑 `config/local-model.json`：
+
+```json
+{
+  "providers": [
+    {
+      "id": "local-ollama",
+      "type": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "models": [{ "id": "qwen3:8b", "name": "Qwen3 8B" }]
+    }
+  ]
+}
+```
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。
 
 ## 许可证
 

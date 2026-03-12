@@ -241,6 +241,8 @@ export class AgentRegistryImpl implements AgentRegistry {
     if (!config?.skills) return [];
 
     const skillConfig = normalizeSkillConfig(config.skills);
+    if (!skillConfig) return [];
+
     const allowedSkills = [...skillConfig.allowed];
 
     if (skillConfig.denied) {

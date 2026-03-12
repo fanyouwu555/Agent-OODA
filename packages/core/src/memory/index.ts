@@ -2,6 +2,8 @@ export * from './short-term';
 export * from './long-term';
 export * from './embedding';
 export * from './persona';
+export * from './context-compressor';
+export * from './memory-expiration';
 
 import { MemoryManager } from './short-term';
 import { LongTermMemory, LongTermMemoryConfig, Memory, MemoryMetadata } from './long-term';

@@ -235,7 +235,7 @@ export class LongTermMemory {
 
   async findByType(type: MemoryMetadata['type']): Promise<Memory[]> {
     const records = this.repository.findByType(type);
-    return records.map(r => this.recordToMemory(r));
+    return records.map((r: MemoryRecord) => this.recordToMemory(r));
   }
 
   size(): number {

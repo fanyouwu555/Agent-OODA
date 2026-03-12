@@ -2,12 +2,14 @@
   "name": "@ooda-agent/tools",
   "version": "0.1.0",
   "description": "Tool system for OODA Agent",
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {

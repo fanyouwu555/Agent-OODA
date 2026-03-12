@@ -237,6 +237,22 @@ export class Observer {
       patterns.push(behaviorPattern);
     }
     
+    // 新增启发式规则
+    const workflowPattern = this.analyzeWorkflowPattern(state.history, toolResults);
+    if (workflowPattern) {
+      patterns.push(workflowPattern);
+    }
+    
+    const complexityPattern = this.analyzeComplexityPattern(state);
+    if (complexityPattern) {
+      patterns.push(complexityPattern);
+    }
+    
+    const contextSwitchPattern = this.analyzeContextSwitch(state.history);
+    if (contextSwitchPattern) {
+      patterns.push(contextSwitchPattern);
+    }
+    
     return patterns;
   }
 
@@ -351,6 +367,156 @@ export class Observer {
         type: 'user_behavior',
         description: '用户倾向于命令模式',
         significance: 0.6,
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * 分析工作流模式 - 检测常见的多步骤工作流
+   */
+  private analyzeWorkflowPattern(history: any[], toolResults: ToolResult[]): Pattern | null {
+    const recentTools = toolResults.slice(-8);
+    if (recentTools.length < 3) return null;
+    
+    const toolNames = recentTools.map(r => r.toolName);
+    
+    // 检测读写工作流: read -> edit -> write
+    const readIndex = toolNames.indexOf('read_file');
+    const writeIndex = toolNames.indexOf('write_file');
+    if (readIndex !== -1 && writeIndex !== -1 && readIndex < writeIndex) {
+      return {
+        type: 'workflow',
+        description: '检测到文件编辑工作流 (读取-修改-写入)',
+        significance: 0.85,
+      };
+    }
+    
+    // 检测搜索-分析工作流
+    const searchIndex = toolNames.findIndex(n => n.includes('search'));
+    const analysisIndex = toolNames.findIndex(n => 
+      n.includes('analysis') || n.includes('analyze')
+    );
+    if (searchIndex !== -1 && analysisIndex !== -1 && searchIndex < analysisIndex) {
+      return {
+        type: 'workflow',
+        description: '检测到搜索-分析工作流',
+        significance: 0.8,
+      };
+    }
+    
+    // 检测调试工作流: run -> error -> read -> edit
+    const runIndex = toolNames.indexOf('run_bash');
+    const errorCount = recentTools.filter(r => r.isError).length;
+    if (runIndex !== -1 && errorCount > 0 && readIndex !== -1 && runIndex < readIndex) {
+      return {
+        type: 'workflow',
+        description: '检测到调试工作流 (运行-错误-修复)',
+        significance: 0.9,
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * 分析复杂度模式 - 评估当前任务的复杂度
+   */
+  private analyzeComplexityPattern(state: AgentState): Pattern | null {
+    const historyLength = state.history.length;
+    const stepCount = state.currentStep;
+    const inputLength = state.originalInput.length;
+    
+    let complexity = 0;
+    let description = '';
+    
+    // 基于历史记录长度判断
+    if (historyLength > 50) {
+      complexity = 0.9;
+      description = '高复杂度任务: 大量历史交互';
+    } else if (historyLength > 20) {
+      complexity = 0.7;
+      description = '中等复杂度任务: 较多历史交互';
+    } else if (stepCount > 10) {
+      complexity = 0.8;
+      description = '高复杂度任务: 多步骤执行';
+    } else if (inputLength > 500) {
+      complexity = 0.6;
+      description = '中等复杂度任务: 详细输入';
+    }
+    
+    // 检测多文件操作
+    const fileOperations = state.history.filter(m => 
+      m.parts?.some((p: any) => 
+        p.type === 'tool_call' && 
+        (p.toolName === 'read_file' || p.toolName === 'write_file')
+      )
+    );
+    const uniqueFiles = new Set(
+      fileOperations.flatMap(m => 
+        m.parts?.filter((p: any) => p.type === 'tool_call')
+          .map((p: any) => p.args?.path)
+      ).filter(Boolean)
+    );
+    
+    if (uniqueFiles.size > 5) {
+      complexity = Math.max(complexity, 0.85);
+      description = description || '高复杂度任务: 多文件操作';
+    }
+    
+    if (complexity > 0) {
+      return {
+        type: 'complexity',
+        description,
+        significance: complexity,
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * 分析上下文切换模式 - 检测用户是否频繁切换话题
+   */
+  private analyzeContextSwitch(history: any[]): Pattern | null {
+    if (history.length < 6) return null;
+    
+    const userMessages = history.filter(m => m.role === 'user').slice(-6);
+    if (userMessages.length < 3) return null;
+    
+    // 提取关键词进行简单的话题检测
+    const extractKeywords = (text: string): string[] => {
+      const keywords = [
+        '文件', '代码', '函数', '类', '测试', 'bug', '错误',
+        'file', 'code', 'function', 'class', 'test', 'bug', 'error',
+        '配置', '设置', 'config', 'setting',
+        '数据库', 'db', 'database',
+        '网络', '请求', 'api', 'network', 'request',
+      ];
+      return keywords.filter(k => text.toLowerCase().includes(k.toLowerCase()));
+    };
+    
+    const messageKeywords = userMessages.map(m => extractKeywords(m.content));
+    
+    // 检测话题切换
+    let switchCount = 0;
+    for (let i = 1; i < messageKeywords.length; i++) {
+      const prev = messageKeywords[i - 1];
+      const curr = messageKeywords[i];
+      
+      // 如果没有共同关键词，认为是话题切换
+      const common = prev.filter(k => curr.includes(k));
+      if (common.length === 0 && prev.length > 0 && curr.length > 0) {
+        switchCount++;
+      }
+    }
+    
+    if (switchCount >= 2) {
+      return {
+        type: 'context_switch',
+        description: `检测到频繁话题切换 (${switchCount}次)`,
+        significance: 0.75,
       };
     }
     

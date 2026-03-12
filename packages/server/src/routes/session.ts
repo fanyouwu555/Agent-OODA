@@ -298,16 +298,24 @@ sessionRoutes
           }
         }, history);
         
-        const toolCalls = result.steps?.map((step: any, index: number) => ({
-          id: `tool-${Date.now()}-${index}`,
-          name: step.tool || 'unknown',
-          args: step.args || {},
-          status: step.error ? 'error' : 'success',
-          result: step.result,
-          error: step.error,
-          startTime: step.startTime || Date.now(),
-          endTime: step.endTime || Date.now(),
-        })) || [];
+        const lastAction = result.metadata?.lastAction as Record<string, unknown> | undefined;
+        const lastResult = result.metadata?.lastResult as Record<string, unknown> | undefined;
+        const toolCalls = lastAction 
+          ? [{
+              id: `tool-${Date.now()}`,
+              name: (lastAction.toolName as string) || (lastAction.type as string) || 'unknown',
+              args: (lastAction.args as Record<string, unknown>) || {},
+              status: lastResult?.success === false ? 'error' : 'success',
+              result: lastResult?.result,
+              error: lastResult?.success === false 
+                ? ((lastResult.result as Record<string, unknown>)?.message as string) 
+                  || ((lastResult.result as Record<string, unknown>)?.result as string) 
+                  || '执行失败'
+                : undefined,
+              startTime: Date.now() - ((lastResult?.executionTime as number) || 0),
+              endTime: Date.now(),
+            }]
+          : [];
         
         const assistantMessageId = `msg-${Date.now()}-response`;
         store.messages.create({

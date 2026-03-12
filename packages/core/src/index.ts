@@ -24,3 +24,23 @@ export * from './permission/enhanced';
 export * from './permission/enhanced-manager';
 export * from './agent';
 export * from './tool';
+export * from './multimodal';
+export * from './logger';
+export * from './monitoring';
+export {
+  CollaborationOrchestrator,
+  getCollaborationOrchestrator,
+  setCollaborationOrchestrator,
+  resetCollaborationOrchestrator,
+} from './collaboration';
+export type {
+  AgentRole,
+  CollaborationTask,
+  CollaborationSession,
+  CollaboratingAgent,
+  CollaborationResult,
+  CollaborationConfig,
+  CollaborationStrategy,
+  TaskResult,
+  CollaborationMetrics,
+} from './collaboration';

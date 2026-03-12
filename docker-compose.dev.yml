@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # 开发环境服务
+  ooda-agent-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ooda-agent-dev
+    ports:
+      - "3000:3000"
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATA_DIR=/app/data
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./data:/app/data
+    command: npm run dev
+    restart: unless-stopped
+    networks:
+      - ooda-dev-network
+
+networks:
+  ooda-dev-network:
+    driver: bridge

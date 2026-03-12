@@ -6,15 +6,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "strict": false,
-    "noImplicitAny": false,
-    "strictNullChecks": false,
-    "strictFunctionTypes": false,
-    "strictBindCallApply": false,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
     "strictPropertyInitialization": false,
-    "noImplicitThis": false,
-    "useUnknownInCatchVariables": false,
-    "alwaysStrict": false,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
+    "alwaysStrict": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noImplicitReturns": false,
@@ -30,7 +30,8 @@
       "@ooda-agent/*": ["./packages/*/src"]
     },
     "outDir": "./dist",
-    "rootDir": "."
+    "rootDir": ".",
+    "typeRoots": ["./node_modules/@types", "./types"]
   },
   "include": [
     "packages/core/**/*",
@@ -40,6 +41,8 @@
   "exclude": [
     "node_modules",
     "dist",
-    "packages/app/**/*"
+    "packages/app/**/*",
+    "**/*.test.ts",
+    "**/__tests__/**/*"
   ]
 }

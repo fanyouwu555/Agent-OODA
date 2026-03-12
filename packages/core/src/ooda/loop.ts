@@ -4,6 +4,7 @@ import { Orienter, resetOrienterState, initOrienterCompressedCount } from './ori
 import { Decider } from './decide';
 import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
+import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
 
 interface CacheEntry<T> {
   value: T;
@@ -82,6 +83,7 @@ export class OODALoop {
   private actor: Actor;
   private sessionMemory: SessionMemory;
   private loopContext: LoopContext;
+  private streamingManager?: StreamingOutputManager;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -97,7 +99,7 @@ export class OODALoop {
   private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
   
-  constructor(sessionId?: string) {
+  constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>) {
     this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     this.sessionMemory = getSessionMemory(this.sessionId);
     this.loopContext = sessionLoopContextManager.getContext(this.sessionId);
@@ -105,6 +107,32 @@ export class OODALoop {
     this.orienter = new Orienter(this.sessionId);
     this.decider = new Decider();
     this.actor = new Actor(this.sessionId);
+    
+    // 初始化流式输出管理器
+    if (streamingHandler) {
+      this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig);
+    }
+  }
+
+  /**
+   * 启用流式输出
+   */
+  enableStreaming(handler: StreamingHandler, config?: Partial<StreamingConfig>): void {
+    this.streamingManager = new StreamingOutputManager(handler, config);
+  }
+
+  /**
+   * 禁用流式输出
+   */
+  disableStreaming(): void {
+    this.streamingManager = undefined;
+  }
+
+  /**
+   * 获取流式输出管理器
+   */
+  getStreamingManager(): StreamingOutputManager | undefined {
+    return this.streamingManager;
   }
 
   async run(input: string): Promise<AgentResult> {
@@ -197,7 +225,9 @@ export class OODALoop {
     
     this.cleanupCache();
     
-    await callback({ phase: 'complete' });
+    const completeEvent = { phase: 'complete' as const };
+    await callback(completeEvent);
+    await this.streamingManager?.handleOODAEvent(completeEvent);
     
     return this.finalizeResult(state);
   }
@@ -223,7 +253,9 @@ export class OODALoop {
     };
     
     let observeStart = Date.now();
-    await callback({ phase: 'observe' });
+    const observeEvent = { phase: 'observe' as const };
+    await callback(observeEvent);
+    await this.streamingManager?.handleOODAEvent(observeEvent);
     console.log('[OODA] Getting observation...');
     const observation = await this.getCachedObservation(state);
     this.enrichObservationWithContext(observation);
@@ -237,12 +269,14 @@ export class OODALoop {
     
     this.loopContext.conversationSummary = orientation.relevantContext?.contextSummary;
     
-    await callback({ 
-      phase: 'orient', 
+    const orientEvent = { 
+      phase: 'orient' as const, 
       data: { 
         intent: `意图类型: ${orientation.primaryIntent.type}, 置信度: ${orientation.primaryIntent.confidence}` 
       } 
-    });
+    };
+    await callback(orientEvent);
+    await this.streamingManager?.handleOODAEvent(orientEvent);
     metrics.orientTime = Date.now() - orientStart;
     
     let decideStart = Date.now();
@@ -250,22 +284,26 @@ export class OODALoop {
     const decision = await this.getCachedDecision(orientation);
     console.log('[OODA] Decision complete:', decision.nextAction.type);
     
-    await callback({ 
-      phase: 'decide', 
+    const decideEvent = { 
+      phase: 'decide' as const, 
       data: { 
         reasoning: decision.reasoning,
         options: decision.options.map(o => o.description),
         selectedOption: decision.selectedOption.description,
       } 
-    });
+    };
+    await callback(decideEvent);
+    await this.streamingManager?.handleOODAEvent(decideEvent);
     metrics.decideTime = Date.now() - decideStart;
     
     let actStart = Date.now();
-    await callback({ phase: 'act' });
+    const actEvent = { phase: 'act' as const };
+    await callback(actEvent);
+    await this.streamingManager?.handleOODAEvent(actEvent);
     
     if (decision.nextAction.toolName) {
-      await callback({
-        phase: 'act',
+      const toolCallEvent = {
+        phase: 'act' as const,
         data: {
           toolCall: {
             id: `call-${state.currentStep}`,
@@ -273,15 +311,17 @@ export class OODALoop {
             args: decision.nextAction.args || {},
           }
         }
-      });
+      };
+      await callback(toolCallEvent);
+      await this.streamingManager?.handleOODAEvent(toolCallEvent);
     }
     
     const actionResult = await this.actor.act(decision);
     this.loopContext.previousResults.push(actionResult);
     
     if (actionResult.feedback.issues.length > 0 || actionResult.feedback.suggestions.length > 0) {
-      await callback({
-        phase: 'feedback',
+      const feedbackEvent = {
+        phase: 'feedback' as const,
         data: {
           feedback: {
             observations: actionResult.feedback.observations,
@@ -289,12 +329,14 @@ export class OODALoop {
             suggestions: actionResult.feedback.suggestions,
           }
         }
-      });
+      };
+      await callback(feedbackEvent);
+      await this.streamingManager?.handleOODAEvent(feedbackEvent);
     }
     
     if (decision.nextAction.toolName) {
-      await callback({
-        phase: 'tool_result',
+      const toolResultEvent = {
+        phase: 'tool_result' as const,
         data: {
           toolCall: {
             id: `call-${state.currentStep}`,
@@ -303,9 +345,10 @@ export class OODALoop {
             result: actionResult.result,
           }
         }
-      });
+      };
+      await callback(toolResultEvent);
+      await this.streamingManager?.handleOODAEvent(toolResultEvent);
     }
-    
     metrics.actTime = Date.now() - actStart;
     
     metrics.totalTime = Date.now() - cycleStartTime;
@@ -462,15 +505,17 @@ export class OODALoop {
     const adaptationNote = `检测到重复失败模式: ${recentErrors.slice(0, 3).join(', ')}. 建议调整策略.`;
     this.loopContext.adaptationNotes.push(adaptationNote);
     
-    await callback({
-      phase: 'adaptation',
+    const adaptationEvent = {
+      phase: 'adaptation' as const,
       data: {
         adaptation: {
           reason: '检测到高失败率或重复错误',
           action: '将在下一轮迭代中调整决策策略',
         }
       }
-    });
+    };
+    await callback(adaptationEvent);
+    await this.streamingManager?.handleOODAEvent(adaptationEvent);
     
     console.log(`[OODA] Adapting strategy: ${adaptationNote}`);
   }

@@ -236,4 +236,3 @@ export class DatabaseManager {
         return results;
     }
 }
-//# sourceMappingURL=database.js.map

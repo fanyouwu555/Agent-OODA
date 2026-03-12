@@ -369,11 +369,49 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     orientation: Orientation,
     analysis: DecisionAnalysis
   ): Promise<Action> {
+    // 启发式决策：高优先级知识缺口
     if (orientation.knowledgeGaps.some(g => g.importance > 0.8)) {
       const gap = orientation.knowledgeGaps.find(g => g.importance > 0.8);
       return {
         type: 'clarification',
         clarificationQuestion: `请提供更多信息: ${gap?.topic}`,
+      };
+    }
+    
+    // 启发式决策：高权限风险约束
+    const highRiskPermission = orientation.constraints.find(c => 
+      c.type === 'permission' && c.severity === 'high'
+    );
+    if (highRiskPermission && orientation.primaryIntent.type === 'execute') {
+      // 对于高风险的执行命令，先请求确认
+      return {
+        type: 'clarification',
+        clarificationQuestion: `即将执行命令，${highRiskPermission.description}，是否继续？`,
+      };
+    }
+    
+    // 启发式决策：连续失败时改变策略
+    const consecutiveFailureConstraint = orientation.constraints.find(c =>
+      c.description.includes('连续失败')
+    );
+    if (consecutiveFailureConstraint && plan.subtasks.length > 0) {
+      // 尝试备选方案或简化任务
+      const simplifiedTask = this.createSimplifiedTask(plan.subtasks[0]);
+      if (simplifiedTask) {
+        return {
+          type: 'tool_call',
+          toolName: simplifiedTask.toolName,
+          args: simplifiedTask.args,
+        };
+      }
+    }
+    
+    // 启发式决策：上下文切换时确认意图
+    const contextSwitchPattern = orientation.patterns.find(p => p.type === 'context_switch');
+    if (contextSwitchPattern && orientation.primaryIntent.confidence < 0.6) {
+      return {
+        type: 'clarification',
+        clarificationQuestion: `检测到话题切换，您当前想解决的是: ${orientation.primaryIntent.rawInput}，对吗？`,
       };
     }
     
@@ -393,12 +431,80 @@ ${orientation.constraints.map(c => c.description).join(', ')}
       };
     }
     
-    const currentTask = pendingTasks[0];
+    // 启发式决策：基于依赖关系选择任务
+    const executableTask = this.selectTaskByDependencies(pendingTasks, plan);
+    
     return {
       type: 'tool_call',
-      toolName: currentTask.toolName,
-      args: currentTask.args,
+      toolName: executableTask.toolName,
+      args: executableTask.args,
     };
+  }
+
+  /**
+   * 启发式任务简化 - 当连续失败时尝试简化任务
+   */
+  private createSimplifiedTask(originalTask: Subtask): Subtask | null {
+    // 对于文件读取失败，尝试读取部分内容
+    if (originalTask.toolName === 'read_file') {
+      return {
+        ...originalTask,
+        args: {
+          ...originalTask.args,
+          limit: 50, // 限制读取行数
+        },
+      };
+    }
+    
+    // 对于搜索失败，尝试简化查询
+    if (originalTask.toolName === 'search_web') {
+      const query = originalTask.args.query as string;
+      const simplifiedQuery = query.split(' ').slice(0, 3).join(' ');
+      return {
+        ...originalTask,
+        args: {
+          ...originalTask.args,
+          query: simplifiedQuery,
+        },
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * 启发式任务选择 - 基于依赖关系选择可执行的任务
+   */
+  private selectTaskByDependencies(pendingTasks: Subtask[], plan: ActionPlan): Subtask {
+    const completedTasks = plan.subtasks
+      .filter(t => t.status === 'completed')
+      .map(t => t.id);
+    
+    // 找到所有依赖已满足的任务
+    const executableTasks = pendingTasks.filter(task =>
+      task.dependencies.every(dep => completedTasks.includes(dep))
+    );
+    
+    if (executableTasks.length === 0) {
+      // 如果没有可执行任务，返回第一个（可能存在循环依赖）
+      return pendingTasks[0];
+    }
+    
+    // 启发式：优先选择低风险任务
+    const lowRiskTask = executableTasks.find(t => 
+      !['write_file', 'run_bash'].includes(t.toolName)
+    );
+    if (lowRiskTask) {
+      return lowRiskTask;
+    }
+    
+    // 启发式：优先选择读取类任务
+    const readTask = executableTasks.find(t => t.toolName === 'read_file');
+    if (readTask) {
+      return readTask;
+    }
+    
+    return executableTasks[0];
   }
 
   private async generateLLMResponse(

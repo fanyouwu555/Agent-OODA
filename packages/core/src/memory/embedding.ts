@@ -46,10 +46,16 @@ export class EmbeddingService {
 
     let embedding: number[];
 
-    if (this.config.provider === 'ollama') {
-      embedding = await this.getOllamaEmbedding(text);
-    } else {
-      embedding = await this.getOpenAICompatibleEmbedding(text);
+    try {
+      if (this.config.provider === 'ollama') {
+        embedding = await this.getOllamaEmbedding(text);
+      } else {
+        embedding = await this.getOpenAICompatibleEmbedding(text);
+      }
+    } catch (error) {
+      console.warn('[EmbeddingService] Failed to get embedding, using fallback:', error);
+      // 使用简单的哈希作为后备 embedding
+      embedding = this.generateFallbackEmbedding(text);
     }
 
     if (this.cache.size >= this.maxCacheSize) {
@@ -63,11 +69,67 @@ export class EmbeddingService {
     return embedding;
   }
 
+  /**
+   * 生成后备 embedding（当服务不可用时使用）
+   * 使用简单的文本特征哈希
+   */
+  private generateFallbackEmbedding(text: string): number[] {
+    const dimensions = this.config.dimensions || 768;
+    const embedding = new Array(dimensions).fill(0);
+    
+    // 使用字符编码分布生成伪 embedding
+    for (let i = 0; i < text.length; i++) {
+      const charCode = text.charCodeAt(i);
+      const index = i % dimensions;
+      embedding[index] += (charCode % 100) / 100;
+    }
+    
+    // 归一化
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+    if (magnitude > 0) {
+      for (let i = 0; i < dimensions; i++) {
+        embedding[i] /= magnitude;
+      }
+    }
+    
+    return embedding;
+  }
+
   async getEmbeddings(texts: string[]): Promise<number[][]> {
     return Promise.all(texts.map(text => this.getEmbedding(text)));
   }
 
   private async getOllamaEmbedding(text: string): Promise<number[]> {
+    const baseUrl = this.config.baseUrl || 'http://localhost:11434';
+    
+    // Ollama embedding API 端点是 /api/embed (不是 /api/embeddings)
+    const response = await fetch(`${baseUrl}/api/embed`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        input: text,
+      }),
+    });
+
+    if (!response.ok) {
+      // 如果 /api/embed 失败，尝试旧的 /api/embeddings 端点
+      if (response.status === 404) {
+        return this.getOllamaEmbeddingLegacy(text);
+      }
+      throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json() as { embeddings: number[][] };
+    return data.embeddings[0];
+  }
+
+  /**
+   * 兼容旧版 Ollama API (/api/embeddings)
+   */
+  private async getOllamaEmbeddingLegacy(text: string): Promise<number[]> {
     const baseUrl = this.config.baseUrl || 'http://localhost:11434';
     
     const response = await fetch(`${baseUrl}/api/embeddings`, {
