@@ -73,6 +73,90 @@ const DEFAULT_AGENTS: AgentInstance[] = [
     status: 'idle',
     usageCount: 0,
   },
+  {
+    config: {
+      name: 'researcher',
+      displayName: 'Research Assistant',
+      description: 'Helps with research, analysis and information gathering',
+      metadata: {
+        icon: '🔍',
+        tags: ['research', 'analysis'],
+        version: '1.0.0',
+      },
+      systemPrompt: 'You are a research assistant that helps gather information, analyze data, and provide comprehensive reports.',
+      tools: { allowed: ['*'] },
+      skills: { allowed: ['*'], autoInitialize: true },
+      model: {
+        name: 'moonshot-v1-8k',
+        provider: 'Kimi',
+        temperature: 0.5,
+        maxTokens: 6000,
+      },
+      runtime: {
+        maxSteps: 80,
+        timeout: 300000,
+      },
+      enabled: true,
+    },
+    status: 'idle',
+    usageCount: 0,
+  },
+  {
+    config: {
+      name: 'writer',
+      displayName: 'Content Writer',
+      description: 'Specialized in writing, editing and creative content',
+      metadata: {
+        icon: '✍️',
+        tags: ['writing', 'content'],
+        version: '1.0.0',
+      },
+      systemPrompt: 'You are a professional writer specializing in creating engaging content, editing, and creative writing.',
+      tools: { allowed: ['*'] },
+      skills: { allowed: ['*'], autoInitialize: true },
+      model: {
+        name: 'moonshot-v1-8k',
+        provider: 'Kimi',
+        temperature: 0.7,
+        maxTokens: 6000,
+      },
+      runtime: {
+        maxSteps: 60,
+        timeout: 300000,
+      },
+      enabled: true,
+    },
+    status: 'idle',
+    usageCount: 0,
+  },
+  {
+    config: {
+      name: 'architect',
+      displayName: 'System Architect',
+      description: 'Helps design system architecture and technical solutions',
+      metadata: {
+        icon: '🏗️',
+        tags: ['architecture', 'design'],
+        version: '1.0.0',
+      },
+      systemPrompt: 'You are a system architect specializing in designing scalable, maintainable systems and technical solutions.',
+      tools: { allowed: ['*'] },
+      skills: { allowed: ['*'], autoInitialize: true },
+      model: {
+        name: 'moonshot-v1-8k',
+        provider: 'Kimi',
+        temperature: 0.4,
+        maxTokens: 8000,
+      },
+      runtime: {
+        maxSteps: 100,
+        timeout: 600000,
+      },
+      enabled: true,
+    },
+    status: 'idle',
+    usageCount: 0,
+  },
 ];
 
 // 初始化默认 Agent

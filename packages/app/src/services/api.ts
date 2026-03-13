@@ -391,6 +391,104 @@ export class ApiClient {
       body: JSON.stringify({ tool, mode }),
     });
   }
+
+  // ============ 日志相关 API ============
+  
+  async getLoggingStatus(): Promise<ApiResponse<{
+    enabled: boolean;
+    level: string;
+    categories: Record<string, boolean>;
+    logDir: string;
+    totalEntries: number;
+    fileEnabled: boolean;
+  }>> {
+    return this.request('/logging/status');
+  }
+
+  async getLoggingStats(): Promise<ApiResponse<{
+    total: number;
+    byLevel: Record<string, number>;
+    byCategory: Record<string, number>;
+    enabled: boolean;
+    level: string;
+    categories: Record<string, boolean>;
+  }>> {
+    return this.request('/logging/stats');
+  }
+
+  async getLoggingEntries(options?: {
+    level?: string;
+    category?: string;
+    sessionId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ApiResponse<{ entries: unknown[]; total: number }>> {
+    const params = new URLSearchParams();
+    if (options?.level) params.set('level', options.level);
+    if (options?.category) params.set('category', options.category);
+    if (options?.sessionId) params.set('sessionId', options.sessionId);
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.offset) params.set('offset', String(options.offset));
+    const query = params.toString();
+    return this.request(`/logging/entries${query ? '?' + query : ''}`);
+  }
+
+  async toggleLogging(enabled: boolean): Promise<ApiResponse<{ success: boolean; enabled: boolean }>> {
+    return this.request('/logging/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async setLoggingLevel(level: string): Promise<ApiResponse<{ success: boolean; level: string }>> {
+    return this.request('/logging/level', {
+      method: 'POST',
+      body: JSON.stringify({ level }),
+    });
+  }
+
+  async setLoggingCategories(categories: Record<string, boolean>): Promise<ApiResponse<{ success: boolean; categories: Record<string, boolean> }>> {
+    return this.request('/logging/categories', {
+      method: 'POST',
+      body: JSON.stringify({ categories }),
+    });
+  }
+
+  async toggleLoggingCategory(category: string, enabled: boolean): Promise<ApiResponse<{ success: boolean; category: string; enabled: boolean }>> {
+    return this.request(`/logging/category/${category}/toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async toggleLoggingFile(enabled: boolean): Promise<ApiResponse<{ success: boolean; fileEnabled: boolean }>> {
+    return this.request('/logging/file/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async clearLoggingMemory(): Promise<ApiResponse<{ success: boolean; cleared: number }>> {
+    return this.request('/logging/clear/memory', {
+      method: 'POST',
+    });
+  }
+
+  async clearLoggingFiles(): Promise<ApiResponse<{ success: boolean; deleted: number; files: string[] }>> {
+    return this.request('/logging/clear/files', {
+      method: 'POST',
+    });
+  }
+
+  async clearAllLogging(): Promise<ApiResponse<{ success: boolean; memoryCleared: number; filesDeleted: number; files: string[] }>> {
+    return this.request('/logging/clear/all', {
+      method: 'POST',
+    });
+  }
+
+  async getLoggingFiles(): Promise<ApiResponse<{ files: string[]; logDir: string }>> {
+    return this.request('/logging/files');
+  }
 }
 
 export const apiClient = new ApiClient();

@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager } from '@ooda-agent/core';
 import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
+import { detailedLogger } from '../utils/detailed-logger';
 import WebSocket from 'ws';
 
 const sessionRoutes = new Hono();
@@ -18,12 +19,15 @@ async function getStorage() {
   if (!storagePromise) {
     const dbPath = process.env.DATABASE_PATH || './data/ooda-agent.db';
     console.log(`[Storage] Initializing storage at: ${dbPath}`);
+    detailedLogger.info('DB', `Initializing storage at: ${dbPath}`);
     try {
       storagePromise = createStorage(dbPath);
       await storagePromise;
       console.log(`[Storage] Storage initialized successfully`);
+      detailedLogger.debug('DB', 'Storage initialized successfully');
     } catch (error) {
       console.error(`[Storage] Failed to initialize storage:`, error);
+      detailedLogger.error('DB', 'Failed to initialize storage', error);
       throw error;
     }
   }
@@ -134,11 +138,14 @@ export function broadcastToSession(sessionId: string, message: unknown) {
   const clients = wsClients.get(sessionId);
   if (clients) {
     const messageStr = JSON.stringify(message);
+    detailedLogger.logWSBroadcast(sessionId, (message as { type?: string })?.type || 'unknown', clients.size);
     clients.forEach(client => {
       try {
         client.send(messageStr);
+        detailedLogger.logWSMessage(sessionId, 'outgoing', message);
       } catch (error) {
         console.error('[WebSocket] Error broadcasting:', error);
+        detailedLogger.logWSError(sessionId, 'Error broadcasting', error);
       }
     });
   }
@@ -153,6 +160,8 @@ export function requestConfirmation(
   return new Promise((resolve) => {
     pendingConfirmations.set(confirmationId, { resolve, sessionId });
     
+    detailedLogger.info('PERMISSION', `Requesting confirmation for ${toolName}`, { confirmationId, args }, sessionId);
+    
     broadcastToSession(sessionId, {
       type: 'confirmation',
       payload: {
@@ -166,6 +175,7 @@ export function requestConfirmation(
     setTimeout(() => {
       if (pendingConfirmations.has(confirmationId)) {
         pendingConfirmations.delete(confirmationId);
+        detailedLogger.warn('PERMISSION', `Confirmation timeout for ${toolName}`, { confirmationId }, sessionId);
         resolve(false);
       }
     }, 60000);
@@ -180,16 +190,19 @@ sessionRoutes
   .post('/session', async (c) => {
     try {
       console.log('[Session] Creating new session...');
+      detailedLogger.info('SERVER', 'Creating new session');
       const store = await getStorage();
       console.log('[Session] Storage obtained');
       const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       
       const session = store.sessions.create({ id: sessionId });
       console.log(`[Session] Created: ${sessionId}`);
+      detailedLogger.info('SERVER', `Session created: ${sessionId}`);
       
       return c.json({ sessionId: session.id });
     } catch (error) {
       console.error('[Session] Error creating session:', error);
+      detailedLogger.error('SERVER', 'Error creating session', error);
       return c.json({ error: 'Failed to create session', message: (error as Error).message }, 500);
     }
   })
@@ -198,6 +211,7 @@ sessionRoutes
     console.log(`[DEBUG] Message endpoint called`);
     const sessionId = c.req.param('id');
     console.log(`[DEBUG] Session ID: ${sessionId}`);
+    detailedLogger.info('SERVER', `Received message for session`, { sessionId });
     
     const store = await getStorage();
     console.log(`[DEBUG] Storage loaded`);
@@ -205,6 +219,7 @@ sessionRoutes
     const session = store.sessions.findById(sessionId);
     if (!session) {
       console.log(`[DEBUG] Session not found: ${sessionId}`);
+      detailedLogger.warn('SERVER', `Session not found: ${sessionId}`);
       return c.json({ error: 'Session not found' }, 404);
     }
     console.log(`[DEBUG] Session found: ${sessionId}`);
@@ -212,8 +227,10 @@ sessionRoutes
     const body = await c.req.json();
     const message = body.message;
     console.log(`[DEBUG] Message received: ${message}`);
+    detailedLogger.debug('SERVER', `User message`, { sessionId, messageLength: message?.length });
     
     if (!message) {
+      detailedLogger.warn('SERVER', `Empty message received`, { sessionId });
       return c.json({ error: 'Message required' }, 400);
     }
     
@@ -233,20 +250,26 @@ sessionRoutes
       content: message,
       timestamp: Date.now(),
     });
+    detailedLogger.debug('DB', `User message stored`, { sessionId, messageId: userMessageId });
 
     if (existingMessages.length === 0 && !session.title) {
       const title = message.slice(0, 50) + (message.length > 50 ? '...' : '');
       store.sessions.update(sessionId, { title });
       console.log(`[Session] Auto-set title for session ${sessionId}: ${title}`);
+      detailedLogger.info('SERVER', `Session title set`, { sessionId, title });
     }
     
     console.log(`[Request] POST /api/session/${sessionId}/message`);
     console.log(`[Context] Loaded ${history.length} history messages`);
+    detailedLogger.info('SERVER', `Starting OODA processing`, { sessionId, historyLength: history.length });
     
     return streamSSE(c, async (stream) => {
       console.log(`[DEBUG] streamSSE started`);
+      detailedLogger.logSSEConnect(sessionId);
+      
       const sendEvent = async (type: string, data: Record<string, unknown>) => {
         console.log(`[SSE] Sending event: ${type}`);
+        detailedLogger.logSSESend(sessionId, type, data);
         await stream.writeSSE({
           data: JSON.stringify({ type, ...data }),
         });
@@ -255,10 +278,12 @@ sessionRoutes
       try {
         await sendEvent('thinking', { content: '正在分析您的请求...' });
         console.log(`[DEBUG] Creating OODALoop for session: ${sessionId}`);
+        detailedLogger.logOODAPhase('start', sessionId, { historyLength: history.length });
         
         // Set up permission callback for user confirmation
         const permissionManager = getPermissionManager();
         permissionManager.setUserConfirmationCallback((toolName, args) => {
+          detailedLogger.debug('PERMISSION', `Permission check for ${toolName}`, { args }, sessionId);
           const confirmationId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
           return requestConfirmation(sessionId, confirmationId, toolName, args);
         });
@@ -269,22 +294,40 @@ sessionRoutes
         // 用于流式输出的累积内容
         let streamedContent = '';
         
+        // 用于存储 OODA 循环的 metadata
+        let oodaMetadata: unknown = null;
+        
         const result = await oodaLoop.runWithCallback(message, async (event) => {
           console.log(`[OODA] Event: ${event.phase}`);
+          detailedLogger.logOODAPhase(event.phase, sessionId, event.data);
+          
+          // 保存 metadata 以便在 complete 阶段使用
+          const eventDataAny = event.data as Record<string, unknown> | undefined;
+          if (eventDataAny?.metadata) {
+            oodaMetadata = eventDataAny.metadata;
+          }
           
           switch (event.phase) {
             case 'observe':
+              detailedLogger.logOOBAObservation(sessionId, message, event.data);
               await sendEvent('thinking', { content: '观察阶段：收集信息...' });
               break;
             case 'orient':
+              const intent = event.data?.intent || '';
+              detailedLogger.logOODAOrientation(sessionId, intent, event.data);
               await sendEvent('intent', { content: event.data?.intent || '分析意图中...' });
               await sendEvent('thinking', { content: '定向阶段：理解上下文...' });
               break;
             case 'decide':
+              const decision = event.data?.selectedOption || '';
+              const reasoning = event.data?.reasoning || '';
+              const options = event.data?.options || [];
+              detailedLogger.logOODADecision(sessionId, decision, reasoning, options);
               await sendEvent('reasoning', { content: event.data?.reasoning || '制定决策中...' });
               break;
             case 'act':
               if (event.data?.toolCall) {
+                detailedLogger.logOODAToolCall(sessionId, event.data.toolCall.name, event.data.toolCall.args, 'running');
                 await sendEvent('tool_call', { 
                   toolCall: { 
                     ...event.data.toolCall, 
@@ -296,6 +339,8 @@ sessionRoutes
               break;
             case 'tool_result':
               if (event.data?.toolCall) {
+                const result = event.data.toolCall.result;
+                detailedLogger.logOODAToolCall(sessionId, event.data.toolCall.name, event.data.toolCall.args, result);
                 await sendEvent('tool_result', { 
                   toolCall: { 
                     ...event.data.toolCall, 
@@ -311,6 +356,7 @@ sessionRoutes
               const eventData = event.data as { output?: string } | undefined;
               const output = eventData?.output || '';
               console.log(`[DEBUG] complete event, output length: ${output.length}, output: ${output.substring(0, 50)}`);
+              detailedLogger.logOODAComplete(sessionId, output, { metadata: oodaMetadata });
               if (output && output.length > 0) {
                 // 立即开始流式发送完整响应内容
                 const chunks = output.match(/.{1,5}/g) || [output];

@@ -10,10 +10,12 @@ import { authRoutes } from './routes/auth';
 import { permissionRoutes } from './routes/permissions';
 import { agentRoutes } from './routes/agents';
 import { toolRoutes } from './routes/tools';
+import { loggingRoutes } from './routes/logging';
 import { cors } from 'hono/cors';
 import { apiRateLimit } from './middleware/rate-limit';
 import { requestLogger } from './middleware/logger';
 import { logger } from './utils/logger';
+import { detailedLogger } from './utils/detailed-logger';
 import { initializeSkills } from '@ooda-agent/tools';
 import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
@@ -146,6 +148,7 @@ async function main() {
   app.route('/api/permissions', permissionRoutes);
   app.route('/api/agents', agentRoutes);
   app.route('/api/tools', toolRoutes);
+  app.route('/api/logging', loggingRoutes);
   app.route('/api', sessionRoutes);
 
   app.get('/health', (c) => {
@@ -266,7 +269,9 @@ async function main() {
 
   wss.on('connection', (ws: WebSocket, request) => {
     const clientIp = request.socket.remoteAddress;
+    const clientId = `ws-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
     logger.logWebSocket('connect', { clientIp });
+    detailedLogger.logWSConnect(clientId, clientIp);
     
     setupHeartbeat(ws);
     
@@ -282,6 +287,7 @@ async function main() {
         clientIp,
         message: parsedMessage 
       });
+      detailedLogger.logWSMessage(clientId, 'incoming', parsedMessage);
       handleWebSocketMessage(ws as any, message);
     });
     
@@ -291,11 +297,13 @@ async function main() {
         code, 
         reason: reason.toString() 
       });
+      detailedLogger.logWSDisconnect(clientId, code, reason.toString());
       cleanupWebSocket(ws as any);
     });
     
     ws.on('error', (error) => {
       logger.logWebSocket('error', { clientIp, error: error.message });
+      detailedLogger.logWSError(clientId, error.message, { stack: error.stack });
       cleanupWebSocket(ws as any);
     });
     
@@ -304,6 +312,7 @@ async function main() {
     });
     
     ws.send(JSON.stringify({ type: 'connected', payload: { timestamp: Date.now() } }));
+    detailedLogger.logWSMessage(clientId, 'outgoing', { type: 'connected', payload: { timestamp: Date.now() } });
   });
 
   server.on('upgrade', (request, socket, head) => {

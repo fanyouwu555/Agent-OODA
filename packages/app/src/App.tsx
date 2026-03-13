@@ -88,9 +88,11 @@ function SessionHistoryPopup(props: {
   isOpen: boolean;
   onClose: () => void;
   currentSessionId: string;
-  sessions: Array<{ id: string; title?: string; messageCount: number; updatedAt?: number }>;
+  sessions: SessionListItem[];
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onDeleteSession: (id: string) => void;
+  onArchiveSession: (id: string) => void;
 }) {
   const [activeTab, setActiveTab] = createSignal<'active' | 'archived'>('active');
 
@@ -103,6 +105,12 @@ function SessionHistoryPopup(props: {
     if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
     if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
     return date.toLocaleDateString('zh-CN');
+  };
+
+  const filteredSessions = () => {
+    return props.sessions.filter(s => 
+      activeTab() === 'active' ? s.status !== 'archived' : s.status === 'archived'
+    );
   };
 
   return (
@@ -157,6 +165,32 @@ function SessionHistoryPopup(props: {
                     <span class="session-title-popup">{session.title || '新会话'}</span>
                     <span class="session-meta-popup">{session.messageCount} 条消息 · {formatTime(session.updatedAt)}</span>
                   </div>
+                  <div class="session-actions-popup">
+                    <button 
+                      class="session-action-btn" 
+                      title="归档"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        props.onArchiveSession(session.id);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>
+                      </svg>
+                    </button>
+                    <button 
+                      class="session-action-btn delete" 
+                      title="删除"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        props.onDeleteSession(session.id);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               )}
             </For>
@@ -180,12 +214,32 @@ function SettingsPopup(props: {
   modelInfo: ModelInfo;
   providers: Provider[];
   onSwitchModel: (provider: string, model: string) => void;
+  agents: AgentInstance[];
+  currentAgent: string;
+  onSelectAgent: (name: string) => void;
+  onSelectSkill: (name: string) => void;
+  mcpServers: Array<{name: string; status: 'connected' | 'disconnected'; tools: number}>;
+  onToggleMcp: (name: string) => void;
+  // 日志相关
+  loggingEnabled: boolean;
+  loggingLevel: string;
+  loggingCategories: Record<string, boolean>;
+  fileLoggingEnabled: boolean;
+  logDir: string;
+  logFiles: string[];
+  onToggleLogging: (enabled: boolean) => void;
+  onSetLoggingLevel: (level: string) => void;
+  onToggleLoggingCategory: (category: string, enabled: boolean) => void;
+  onToggleFileLogging: (enabled: boolean) => void;
+  onClearLogs: () => void;
 }) {
   const sections = [
     { id: 'chat', name: '对话', icon: '💬' },
     { id: 'agents', name: 'Agent', icon: '🤖' },
+    { id: 'mcp', name: 'MCP', icon: '🔌' },
     { id: 'tools', name: '工具', icon: '🔧' },
     { id: 'permissions', name: '权限', icon: '🔒' },
+    { id: 'logging', name: '日志', icon: '📋' },
   ];
 
   return (
@@ -255,29 +309,74 @@ function SettingsPopup(props: {
 
             <Show when={props.activeSection === 'agents'}>
               <div class="settings-section-content">
-                <p class="section-desc">管理Agent配置</p>
+                <p class="section-desc">选择Agent</p>
                 <div class="agents-list-compact">
-                  <div class="agent-card-compact">
-                    <span class="agent-icon">🤖</span>
-                    <div class="agent-info">
-                      <span class="agent-name">Default Agent</span>
-                      <span class="agent-desc">默认OODA Agent</span>
-                    </div>
-                    <span class="agent-badge-active">活动中</span>
-                  </div>
+                  <For each={props.agents}>
+                    {(agent) => (
+                      <div 
+                        class={`agent-card-compact ${props.currentAgent === agent.config.name ? 'active' : ''}`}
+                        onClick={() => props.onSelectAgent(agent.config.name)}
+                      >
+                        <span class="agent-icon">{agent.config.metadata?.icon || '🤖'}</span>
+                        <div class="agent-info">
+                          <span class="agent-name">{agent.config.displayName || agent.config.name}</span>
+                          <span class="agent-desc">{agent.config.description}</span>
+                        </div>
+                        <Show when={props.currentAgent === agent.config.name}>
+                          <span class="agent-badge-active">当前</span>
+                        </Show>
+                        <Show when={agent.status === 'disabled'}>
+                          <span class="agent-badge-disabled">已禁用</span>
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                  <Show when={props.agents.length === 0}>
+                    <div class="empty-state-small">暂无Agent</div>
+                  </Show>
+                </div>
+              </div>
+            </Show>
+
+            <Show when={props.activeSection === 'mcp'}>
+              <div class="settings-section-content">
+                <p class="section-desc">MCP服务器 - 点击切换开关</p>
+                <div class="mcp-list">
+                  <For each={props.mcpServers}>
+                    {(server) => (
+                      <div class="mcp-item">
+                        <div class="mcp-info">
+                          <span class="mcp-name">{server.name}</span>
+                          <span class="mcp-tools">{server.tools} 个工具</span>
+                        </div>
+                        <button 
+                          class={`mcp-toggle ${server.status}`}
+                          onClick={() => props.onToggleMcp(server.name)}
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </For>
                 </div>
               </div>
             </Show>
 
             <Show when={props.activeSection === 'tools'}>
               <div class="settings-section-content">
-                <p class="section-desc">可用工具 ({props.skills.length})</p>
+                <p class="section-desc">Agent 可用技能列表 ({props.skills.length}个)</p>
                 <div class="tools-grid-popup">
                   <For each={props.skills}>
                     {(skill) => (
-                      <div class="tool-item-popup">
+                      <div 
+                        class="tool-item-popup"
+                        title="技能由 Agent 自动调用"
+                      >
                         <span class="tool-name">{skill.name}</span>
                         <span class="tool-category">{skill.category}</span>
+                        <span class="tool-desc">{skill.description}</span>
                       </div>
                     )}
                   </For>
@@ -308,6 +407,110 @@ function SettingsPopup(props: {
                 </div>
               </div>
             </Show>
+
+            <Show when={props.activeSection === 'logging'}>
+              <div class="settings-section-content">
+                <p class="section-desc">日志管理 - 控制和查看系统日志</p>
+                
+                <div class="logging-main-switch">
+                  <div class="logging-toggle-row">
+                    <span class="toggle-label">启用日志记录</span>
+                    <button 
+                      class={`logging-toggle ${props.loggingEnabled ? 'on' : 'off'}`}
+                      onClick={() => props.onToggleLogging(!props.loggingEnabled)}
+                    >
+                      <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                      </span>
+                    </button>
+                  </div>
+                  <div class="logging-toggle-row">
+                    <span class="toggle-label">写入文件</span>
+                    <button 
+                      class={`logging-toggle ${props.fileLoggingEnabled ? 'on' : 'off'}`}
+                      onClick={() => props.onToggleFileLogging(!props.fileLoggingEnabled)}
+                    >
+                      <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="logging-level-section">
+                  <label>日志级别</label>
+                  <select 
+                    value={props.loggingLevel}
+                    onChange={(e) => props.onSetLoggingLevel(e.currentTarget.value)}
+                    disabled={!props.loggingEnabled}
+                  >
+                    <option value="trace">Trace (最详细)</option>
+                    <option value="debug">Debug (调试)</option>
+                    <option value="info">Info (信息)</option>
+                    <option value="warn">Warn (警告)</option>
+                    <option value="error">Error (错误)</option>
+                  </select>
+                </div>
+
+                <div class="logging-categories-section">
+                  <label>日志分类</label>
+                  <div class="logging-categories-grid">
+                    {Object.entries(props.loggingCategories).map(([category, enabled]) => (
+                      <div class="logging-category-item">
+                        <span class="category-name">{category}</span>
+                        <button 
+                          class={`logging-toggle small ${enabled ? 'on' : 'off'}`}
+                          onClick={() => props.onToggleLoggingCategory(category, !enabled)}
+                          disabled={!props.loggingEnabled}
+                        >
+                          <span class="toggle-track">
+                            <span class="toggle-thumb"></span>
+                          </span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div class="logging-actions">
+                  <button 
+                    class="btn-secondary"
+                    onClick={props.onClearLogs}
+                  >
+                    清除日志
+                  </button>
+                </div>
+
+                <Show when={props.logDir}>
+                  <div class="logging-info-section">
+                    <label>日志目录</label>
+                    <div class="log-dir-path" title={props.logDir}>
+                      {props.logDir}
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={props.logFiles.length > 0}>
+                  <div class="logging-files-section">
+                    <label>日志文件 ({props.logFiles.length})</label>
+                    <div class="log-files-list">
+                      {props.logFiles.map((file) => {
+                        const fileName = file.split(/[/\\]/).pop() || file;
+                        return (
+                          <div class="log-file-item" title={file}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                              <polyline points="14 2 14 8 20 8"/>
+                            </svg>
+                            <span class="file-name">{fileName}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </Show>
+              </div>
+            </Show>
           </div>
         </div>
       </div>
@@ -323,9 +526,13 @@ function App() {
   const [skills, setSkills] = createSignal<Skill[]>([]);
   const [confirmationRequest, setConfirmationRequest] = createSignal<ConfirmationRequest | null>(null);
   const [currentToolCalls, setCurrentToolCalls] = createSignal<ToolCall[]>([]);
-  const [connectionStatus, setConnectionStatus] = createSignal<'connected' | 'disconnected' | 'connecting'>('connecting');
-  const [modelInfo, setModelInfo] = createSignal<ModelInfo>({ name: 'moonshot-v1-8k', provider: 'Kimi', temperature: 0.7, maxTokens: 4000 });
-  const [providers, setProviders] = createSignal<Provider[]>([]);
+  const [connectionStatus, setConnectionStatus] = createSignal<'connected' | 'disconnected' | 'connecting'>('disconnected');
+  const [modelInfo, setModelInfo] = createSignal<{ name: string; provider: string; temperature: number; maxTokens: number }>({ name: 'moonshot-v1-8k', provider: 'Kimi', temperature: 0.7, maxTokens: 4000 });
+  const [providers, setProviders] = createSignal<Provider[]>([
+    { name: 'Kimi', type: 'api', models: [{ name: 'moonshot-v1-8k', temperature: 0.7, maxTokens: 4000 }] },
+    { name: 'OpenAI', type: 'api', models: [{ name: 'gpt-4', temperature: 0.7, maxTokens: 8000 }, { name: 'gpt-3.5-turbo', temperature: 0.7, maxTokens: 4000 }] },
+    { name: 'Anthropic', type: 'api', models: [{ name: 'claude-3-opus', temperature: 0.7, maxTokens: 200000 }, { name: 'claude-3-sonnet', temperature: 0.7, maxTokens: 200000 }] },
+  ]);
   const [currentThinking, setCurrentThinking] = createSignal<string>('');
   const [currentIntent, setCurrentIntent] = createSignal<string>('');
   const [currentReasoning, setCurrentReasoning] = createSignal<string>('');
@@ -340,6 +547,102 @@ function App() {
   const [currentAgent, setCurrentAgent] = createSignal('default');
   const [agents, setAgents] = createSignal<AgentInstance[]>([]);
   const [sessions, setSessions] = createSignal<SessionListItem[]>([]);
+  
+  // MCP服务器状态
+  const [mcpServers, setMcpServers] = createSignal<Array<{name: string; status: 'connected' | 'disconnected'; tools: number}>>([
+    { name: 'filesystem', status: 'connected', tools: 5 },
+    { name: 'git', status: 'disconnected', tools: 0 },
+    { name: 'browser', status: 'connected', tools: 8 },
+  ]);
+  
+  // 日志管理状态
+  const [loggingEnabled, setLoggingEnabled] = createSignal(true);
+  const [loggingLevel, setLoggingLevel] = createSignal('info');
+  const [loggingCategories, setLoggingCategories] = createSignal<Record<string, boolean>>({
+    OODA: true, SERVER: true, SSE: true, WEBSOCKET: true, HTTP: true, 
+    TOOL: true, SKILL: true, MEMORY: true, DB: true, PERMISSION: true, CONFIG: true, SYSTEM: true
+  });
+  const [fileLoggingEnabled, setFileLoggingEnabled] = createSignal(true);
+  const [logDir, setLogDir] = createSignal('');
+  const [logFiles, setLogFiles] = createSignal<string[]>([]);
+  
+  // 加载日志状态
+  let loggingLoaded = false;
+  const loadLoggingStatus = async () => {
+    if (loggingLoaded) return;
+    loggingLoaded = true;
+    try {
+      const result = await apiClient.getLoggingStatus();
+      if (result.success && result.data) {
+        setLoggingEnabled(result.data.enabled);
+        setLoggingLevel(result.data.level);
+        setLoggingCategories(result.data.categories);
+        setFileLoggingEnabled(result.data.fileEnabled);
+        setLogDir(result.data.logDir);
+      }
+      // 加载日志文件列表
+      const filesResult = await apiClient.getLoggingFiles();
+      if (filesResult.success && filesResult.data) {
+        setLogFiles(filesResult.data.files);
+      }
+    } catch (e) {
+      console.error('Failed to load logging status:', e);
+    }
+  };
+  
+  // 日志控制函数
+  const handleToggleLogging = async (enabled: boolean) => {
+    const result = await apiClient.toggleLogging(enabled);
+    if (result.success) {
+      setLoggingEnabled(enabled);
+      showToast('success', enabled ? '日志已启用' : '日志已禁用');
+    }
+  };
+  
+  const handleSetLoggingLevel = async (level: string) => {
+    const result = await apiClient.setLoggingLevel(level);
+    if (result.success) {
+      setLoggingLevel(level);
+      showToast('success', `日志级别已设置为 ${level}`);
+    }
+  };
+  
+  const handleToggleLoggingCategory = async (category: string, enabled: boolean) => {
+    const result = await apiClient.toggleLoggingCategory(category, enabled);
+    if (result.success) {
+      setLoggingCategories(prev => ({ ...prev, [category]: enabled }));
+      showToast('success', `${category} 日志已${enabled ? '启用' : '禁用'}`);
+    }
+  };
+  
+  const handleToggleFileLogging = async (enabled: boolean) => {
+    const result = await apiClient.toggleLoggingFile(enabled);
+    if (result.success) {
+      setFileLoggingEnabled(enabled);
+      showToast('success', enabled ? '文件日志已启用' : '文件日志已禁用');
+    }
+  };
+  
+  const handleClearLogs = async () => {
+    if (!confirm('确定要清除所有日志吗？')) return;
+    const result = await apiClient.clearAllLogging();
+    if (result.success) {
+      showToast('success', `已清除 ${result.data?.memoryCleared || 0} 条内存日志和 ${result.data?.filesDeleted || 0} 个日志文件`);
+    }
+  };
+  
+  // 切换MCP服务器状态
+  const toggleMcpServer = (name: string) => {
+    setMcpServers(prev => prev.map(s => 
+      s.name === name 
+        ? { ...s, status: s.status === 'connected' ? 'disconnected' : 'connected' }
+        : s
+    ));
+    // 显示切换后的状态（切换前状态的相反）
+    const currentStatus = mcpServers().find(s => s.name === name)?.status;
+    const newStatus = currentStatus === 'connected' ? 'disconnected' : 'connected';
+    showToast('info', `MCP ${name} 已${newStatus === 'connected' ? '启用' : '禁用'}`);
+  };
 
   let messagesContainer: HTMLDivElement | undefined;
   let wsClient: ReturnType<typeof createWebSocketClient>;
@@ -464,6 +767,39 @@ function App() {
     }
   };
 
+  const deleteSession = async (sessionIdToDelete: string) => {
+    const result = await apiClient.deleteSession(sessionIdToDelete);
+    if (result.success) {
+      showToast('success', '会话已删除');
+      // 从列表中移除
+      setSessions(prev => prev.filter(s => s.id !== sessionIdToDelete));
+      // 如果删除的是当前会话，创建新会话
+      if (sessionIdToDelete === sessionId()) {
+        createNewSession();
+      }
+    } else {
+      showToast('error', result.error || '删除失败');
+    }
+  };
+
+  const archiveSession = async (sessionIdToArchive: string) => {
+    const result = await apiClient.archiveSession(sessionIdToArchive);
+    if (result.success) {
+      showToast('success', '会话已归档');
+      // 更新列表中的状态
+      setSessions(prev => prev.map(s => 
+        s.id === sessionIdToArchive ? { ...s, status: 'archived' } : s
+      ));
+    } else {
+      showToast('error', result.error || '归档失败');
+    }
+  };
+
+  // 过滤当前tab的会话
+  const filteredSessions = () => {
+    return sessions();
+  };
+
   let skillsLoaded = false;
   const loadSkills = async () => {
     if (skillsLoaded) return;
@@ -478,10 +814,38 @@ function App() {
   const loadModels = async () => {
     if (modelsLoaded) return;
     modelsLoaded = true;
-    const result = await apiClient.getModels();
-    if (result.success && result.data) {
-      setProviders(result.data.providers);
-      setModelInfo(result.data.activeModel);
+    try {
+      const result = await apiClient.getModels();
+      if (result.success && result.data) {
+        setProviders(result.data.providers);
+        // 后端返回的是 model 字段，前端期望 name
+        const active: any = result.data.activeModel;
+        setModelInfo({
+          name: active.model || active.name || 'unknown',
+          provider: active.provider || 'unknown',
+          temperature: active.temperature ?? 0.7,
+          maxTokens: active.maxTokens ?? 2000
+        });
+      } else {
+        // 如果API失败，使用默认模型
+        setProviders([{
+          name: 'Kimi',
+          type: 'api',
+          models: [{ name: 'moonshot-v1-8k' }]
+        }, {
+          name: 'OpenAI',
+          type: 'api', 
+          models: [{ name: 'gpt-4' }, { name: 'gpt-3.5-turbo' }]
+        }]);
+      }
+    } catch (e) {
+      console.error('Failed to load models:', e);
+      // 使用默认模型
+      setProviders([{
+        name: 'Kimi',
+        type: 'api',
+        models: [{ name: 'moonshot-v1-8k' }]
+      }]);
     }
   };
 
@@ -682,9 +1046,16 @@ function App() {
   };
 
   const callSkill = async (skillName: string) => {
-    const skillMessage = `请使用 ${skillName} 技能`;
-    setMessage(skillMessage);
+    // 找到技能信息
+    const skill = skills().find(s => s.name === skillName);
+    
+    // 技能应该被直接调用，而不是添加到输入框
+    // 使用特殊格式让后端识别为直接调用技能
+    setMessage(`使用技能: ${skillName}`);
+    setShowSettings(false);
+    // 自动发送
     setTimeout(() => sendMessage(), 100);
+    showToast('info', `正在调用 ${skillName} 技能...`);
   };
 
   const clearMessages = () => {
@@ -744,6 +1115,7 @@ function App() {
           </div>
           <button class="nav-icon-btn" onClick={() => {
             setSettingsSection('chat');
+            loadLoggingStatus();
             setShowSettings(true);
           }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -762,9 +1134,11 @@ function App() {
         isOpen={showSessionHistory()}
         onClose={() => setShowSessionHistory(false)}
         currentSessionId={sessionId()}
-        sessions={sessions()}
+        sessions={filteredSessions()}
         onSelectSession={switchSession}
         onNewSession={createNewSession}
+        onDeleteSession={deleteSession}
+        onArchiveSession={archiveSession}
       />
 
       <SettingsPopup
@@ -776,6 +1150,23 @@ function App() {
         modelInfo={modelInfo()}
         providers={providers()}
         onSwitchModel={switchModel}
+        agents={agents()}
+        currentAgent={currentAgent()}
+        onSelectAgent={setCurrentAgent}
+        onSelectSkill={callSkill}
+        mcpServers={mcpServers()}
+        onToggleMcp={toggleMcpServer}
+        loggingEnabled={loggingEnabled()}
+        loggingLevel={loggingLevel()}
+        loggingCategories={loggingCategories()}
+        fileLoggingEnabled={fileLoggingEnabled()}
+        logDir={logDir()}
+        logFiles={logFiles()}
+        onToggleLogging={handleToggleLogging}
+        onSetLoggingLevel={handleSetLoggingLevel}
+        onToggleLoggingCategory={handleToggleLoggingCategory}
+        onToggleFileLogging={handleToggleFileLogging}
+        onClearLogs={handleClearLogs}
       />
 
       {/* 主内容区 */}
@@ -1061,6 +1452,31 @@ function App() {
         </div>
 
         <footer class="input-area">
+          {/* 输入框上方模型选择器 */}
+          <div class="input-model-selector">
+            <select 
+              class="model-select"
+              value={`${modelInfo().provider}/${modelInfo().name}`}
+              onChange={(e) => {
+                const [provider, model] = e.currentTarget.value.split('/');
+                switchModel(provider, model);
+              }}
+            >
+              <For each={providers()}>
+                {(provider) => (
+                  <optgroup label={provider.name}>
+                    <For each={provider.models}>
+                      {(model) => (
+                        <option value={`${provider.name}/${model.name}`}>
+                          {model.name}
+                        </option>
+                      )}
+                    </For>
+                  </optgroup>
+                )}
+              </For>
+            </select>
+          </div>
           <div class="input-container">
             <textarea
               value={message()}

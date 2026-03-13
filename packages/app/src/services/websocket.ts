@@ -48,10 +48,10 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
     if (ws?.readyState === WebSocket.OPEN) return;
 
     try {
+      // 使用当前页面的host和端口
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // 支持从环境变量获取 WebSocket 端口
-      const wsPort = import.meta.env.VITE_WS_PORT || '3000';
       const wsHost = window.location.hostname;
+      const wsPort = window.location.port || '3000';
       const wsUrl = options.url.startsWith('ws') 
         ? options.url 
         : `${protocol}//${wsHost}:${wsPort}${options.url}`;
