@@ -44,7 +44,11 @@
         "write": "ask",
         "edit": "ask",
         "bash": "ask",
-        "webfetch": "ask"
+        "webfetch": "ask",
+        "context7": "allow",
+        "grep_app": "allow",
+        "web_search": "allow",
+        "web_fetch": "allow"
       },
       "skills": {
         "data_analysis": "ask",
@@ -83,6 +87,11 @@
         "name": "network",
         "displayName": "网络工具",
         "tools": ["webfetch"]
+      },
+      "mcp": {
+        "name": "mcp",
+        "displayName": "MCP 工具",
+        "tools": ["context7", "grep_app", "web_search", "web_fetch"]
       }
     }
   },
@@ -313,6 +322,24 @@
         "env": {
           "NODE_ENV": "production"
         }
+      },
+      "context7": {
+        "command": "npx",
+        "args": ["-y", "@upstash/context7-mcp"],
+        "description": "Context7 - 获取最新的库文档和代码示例",
+        "env": {}
+      },
+      "grep_app": {
+        "url": "http://localhost:8603/mcp",
+        "description": "GrepApp - GitHub 代码搜索"
+      },
+      "websearch": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+        "env": {
+          "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+        },
+        "description": "WebSearch - 网络搜索"
       }
     }
   }

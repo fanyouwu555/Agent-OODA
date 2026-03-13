@@ -539,7 +539,12 @@ export class Observer {
   }
 
   private async getRelevantFacts(query: string): Promise<string[]> {
-    const memories = await this.sessionMemory.getLongTerm().search(query, { limit: 3 });
+    // 如果没有长期记忆，直接返回空
+    const ltMemory = this.sessionMemory.getLongTerm();
+    if (ltMemory.size() === 0) {
+      return [];
+    }
+    const memories = await ltMemory.search(query, { limit: 3 });
     return memories.map(m => m.content);
   }
 

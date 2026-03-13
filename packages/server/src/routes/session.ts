@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { OODALoop, getConfigManager, reinitializeLLMService } from '@ooda-agent/core';
+import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager } from '@ooda-agent/core';
 import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import WebSocket from 'ws';
@@ -255,6 +255,13 @@ sessionRoutes
       try {
         await sendEvent('thinking', { content: '正在分析您的请求...' });
         console.log(`[DEBUG] Creating OODALoop for session: ${sessionId}`);
+        
+        // Set up permission callback for user confirmation
+        const permissionManager = getPermissionManager();
+        permissionManager.setUserConfirmationCallback((toolName, args) => {
+          const confirmationId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          return requestConfirmation(sessionId, confirmationId, toolName, args);
+        });
         
         const oodaLoop = new OODALoop(sessionId);
         console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);

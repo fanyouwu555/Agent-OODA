@@ -94,6 +94,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
         console.log(`[OpenAI-Compatible] POST ${url} (attempt ${attempt}/${maxRetries})`);
         console.log(`[OpenAI-Compatible] Model: ${this.model}, Messages: ${messages.length}`);
         
+        // 添加超时控制 - 60秒超时
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        
         const response = await fetch(url, {
           method: 'POST',
           headers: {
@@ -101,7 +105,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
             'Authorization': `Bearer ${this.apiKey}`,
           },
           body,
+          signal: controller.signal,
         });
+        
+        clearTimeout(timeoutId);
         
         console.log(`[OpenAI-Compatible] Response status: ${response.status}`);
         
@@ -134,6 +141,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
           time: endTime - startTime,
         };
       } catch (error) {
+        // 处理超时错误
+        if (error instanceof Error && error.name === 'AbortError') {
+          console.log(`[OpenAI-Compatible] Request timed out after 60s`);
+          throw new Error('Request timed out after 60 seconds');
+        }
         if (attempt === maxRetries) {
           throw error;
         }

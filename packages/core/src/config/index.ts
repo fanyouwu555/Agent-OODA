@@ -1,6 +1,7 @@
 // packages/core/src/config/index.ts
 import { PermissionConfig, PermissionMode } from '../permission';
 import { LLMProviderConfig } from '../llm/provider';
+import { EmbeddingConfig } from '../memory/embedding';
 
 function resolveEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, envVar) => {
@@ -77,6 +78,13 @@ export interface OODAAgentConfig {
       args?: string[];
       env?: Record<string, string>;
     }>;
+  };
+  embedding?: {
+    provider?: 'ollama' | 'openai-compatible';
+    model?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    dimensions?: number;
   };
 }
 
@@ -345,6 +353,20 @@ export class ConfigManager {
   
   getMCPServers(): Record<string, { command: string; args?: string[]; env?: Record<string, string> }> {
     return this.config.mcp?.servers || {};
+  }
+  
+  getEmbeddingConfig(): { provider: 'ollama' | 'openai-compatible'; model: string; baseUrl?: string; apiKey?: string; dimensions?: number } | null {
+    const emb = this.config.embedding;
+    if (!emb) {
+      return null;
+    }
+    return {
+      provider: emb.provider || 'ollama',
+      model: emb.model || 'nomic-embed-text',
+      baseUrl: emb.baseUrl,
+      apiKey: emb.apiKey,
+      dimensions: emb.dimensions || 768,
+    };
   }
   
   validateConfig(): { valid: boolean; errors: string[] } {

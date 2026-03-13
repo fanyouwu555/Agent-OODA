@@ -20,15 +20,29 @@ export class EmbeddingService {
 
   constructor(config?: Partial<EmbeddingConfig>) {
     const configManager = getConfigManager();
+    // 优先使用独立的 embedding 配置
+    const embeddingConfig = configManager.getEmbeddingConfig();
     const providerConfig = configManager.getActiveProviderConfig();
     
-    this.config = {
-      provider: config?.provider || (providerConfig?.type === 'ollama' ? 'ollama' : 'openai-compatible'),
-      model: config?.model || 'nomic-embed-text',
-      baseUrl: config?.baseUrl,
-      apiKey: config?.apiKey,
-      dimensions: config?.dimensions || 768,
-    };
+    // 如果有独立的 embedding 配置，直接使用
+    if (embeddingConfig) {
+      this.config = {
+        provider: embeddingConfig.provider,
+        model: embeddingConfig.model,
+        baseUrl: embeddingConfig.baseUrl,
+        apiKey: embeddingConfig.apiKey,
+        dimensions: embeddingConfig.dimensions,
+      };
+    } else {
+      // 回退到基于 LLM provider 的逻辑
+      this.config = {
+        provider: config?.provider || (providerConfig?.type === 'ollama' ? 'ollama' : 'openai-compatible'),
+        model: config?.model || 'nomic-embed-text',
+        baseUrl: config?.baseUrl,
+        apiKey: config?.apiKey,
+        dimensions: config?.dimensions || 768,
+      };
+    }
 
     if (!this.config.baseUrl) {
       if (this.config.provider === 'ollama') {

@@ -16,7 +16,7 @@ interface AnalysisResult {
 }
 
 const MAX_HISTORY_TOKENS = 4000;
-const COMPRESS_THRESHOLD = 20;
+const COMPRESS_THRESHOLD = 50; // 从 20 改为 50，减少压缩频率
 const KEEP_RECENT_MESSAGES = 10;
 
 interface OrienterState {

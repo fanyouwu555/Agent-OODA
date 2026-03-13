@@ -1,7 +1,7 @@
 {
   "$schema": "https://ooda-agent.ai/config.json",
-  "activeProvider": "local-ollama",
-  "activeModel": "qwen3:8b",
+  "activeProvider": "longcat",
+  "activeModel": "LongCat-Flash-Lite",
   "provider": {
     "local-ollama": {
       "type": "ollama",
@@ -103,7 +103,7 @@
         "systemPrompt": "你是一个专业的代码编写助手，擅长编写高质量、可维护的代码。",
         "tools": ["read", "write", "edit", "bash", "grep", "glob", "list"],
         "model": {
-          "name": "qwen3:8b",
+          "name": "LongCat-Flash-Lite",
           "temperature": 0.7,
           "topP": 0.9,
           "maxTokens": 4000
@@ -115,7 +115,7 @@
         "systemPrompt": "你是一个任务规划专家，擅长分析需求并制定详细的执行计划。",
         "tools": ["read", "grep", "glob", "list"],
         "model": {
-          "name": "qwen3:8b",
+          "name": "LongCat-Flash-Thinking",
           "temperature": 0.5,
           "topP": 0.8,
           "maxTokens": 3000
@@ -127,7 +127,7 @@
         "systemPrompt": "你是一个通用的AI助手，可以处理各种任务。",
         "tools": ["read", "write", "edit", "bash", "grep", "glob", "list", "webfetch"],
         "model": {
-          "name": "qwen3:8b",
+          "name": "LongCat-Flash-Lite",
           "temperature": 0.7,
           "topP": 0.9,
           "maxTokens": 4000
@@ -139,7 +139,7 @@
         "systemPrompt": "你是一个代码探索专家，擅长分析代码结构和理解项目。",
         "tools": ["read", "grep", "glob", "list"],
         "model": {
-          "name": "qwen3:8b",
+          "name": "LongCat-Flash-Thinking",
           "temperature": 0.6,
           "topP": 0.85,
           "maxTokens": 3000
@@ -150,5 +150,11 @@
   "tools": {},
   "mcp": {
     "servers": {}
+  },
+  "embedding": {
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "baseUrl": "http://localhost:11434",
+    "dimensions": 768
   }
 }

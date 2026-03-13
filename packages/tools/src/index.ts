@@ -6,6 +6,7 @@ export * from './utility-tools';
 export * from './git-tools';
 export * from './skills/base-skill';
 export * from './skills/advanced-skills';
+export { context7Tool, grepAppTool, webSearchTool as mcpWebSearchTool, webFetchTool as mcpWebFetchTool, initializeMCPTools } from './mcp-tools';
 
 import { ToolRegistry } from './registry';
 import { 
