@@ -1,6 +1,30 @@
-import { Show, For } from 'solid-js';
+import { Show, For, createSignal } from 'solid-js';
 import type { Message } from '../types';
 import { ToolCallList } from './ToolCallDisplay';
+import { MarkdownRenderer } from './MarkdownRenderer';
+
+// 格式化时间戳（参考 OpenCode 展示格式）
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  // 如果是今天，显示时间
+  if (diffMins < 1) {
+    return '刚刚';
+  } else if (diffMins < 60) {
+    return `${diffMins}分钟前`;
+  } else if (diffHours < 24 && date.getDate() === now.getDate()) {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  } else if (diffDays < 7) {
+    return `${diffDays}天前`;
+  } else {
+    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+  }
+}
 
 interface MessageItemProps {
   message: Message;
@@ -34,89 +58,21 @@ export function MessageItem(props: MessageItemProps) {
             {isUser() ? 'You' : 'Agent'}
           </strong>
           <span style={{ fontSize: '10px', opacity: 0.6 }}>
-            {new Date(props.message.timestamp).toLocaleTimeString()}
+            {formatTimestamp(props.message.timestamp)}
+            <Show when={props.message.isQueued}>
+              <span class="queued-badge">QUEUED</span>
+            </Show>
+            <Show when={props.message.status === 'error'}>
+              <span class="error-badge">ERROR</span>
+            </Show>
           </span>
         </div>
-        <p style={{ margin: '0', whiteSpace: 'pre-wrap' }}>{props.message.content}</p>
+        <div class="message-content-wrapper">
+          <MarkdownRenderer content={props.message.content} />
+        </div>
       </div>
 
-      <Show when={!isUser() && (props.message.thinking || props.message.intent || props.message.reasoning)}>
-        <div style={{ maxWidth: '80%', marginTop: '8px', width: '100%' }}>
-          <button
-            onClick={() => setShowDetails(!showDetails())}
-            style={{
-              padding: '4px 12px',
-              fontSize: '11px',
-              backgroundColor: '#e3f2fd',
-              border: '1px solid #90caf9',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              color: '#1565c0',
-            }}
-          >
-            {showDetails() ? '隐藏 OODA 过程' : '显示 OODA 过程'}
-          </button>
-          <Show when={showDetails()}>
-            <div style={{
-              marginTop: '8px',
-              padding: '12px',
-              backgroundColor: '#fafafa',
-              borderRadius: '8px',
-              border: '1px solid #e0e0e0',
-            }}>
-              <Show when={props.message.thinking}>
-                <div style={{ marginBottom: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                    <span style={{ color: '#1976d2', fontWeight: 500 }}>🧠 思考 (Orient)</span>
-                  </div>
-                  <pre style={{
-                    margin: '0',
-                    padding: '8px',
-                    backgroundColor: 'white',
-                    borderRadius: '4px',
-                    fontSize: '11px',
-                    whiteSpace: 'pre-wrap',
-                    color: '#333',
-                  }}>{props.message.thinking}</pre>
-                </div>
-              </Show>
-              <Show when={props.message.intent}>
-                <div style={{ marginBottom: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                    <span style={{ color: '#388e3c', fontWeight: 500 }}>🎯 意图 (Observe)</span>
-                  </div>
-                  <pre style={{
-                    margin: '0',
-                    padding: '8px',
-                    backgroundColor: 'white',
-                    borderRadius: '4px',
-                    fontSize: '11px',
-                    whiteSpace: 'pre-wrap',
-                    color: '#333',
-                  }}>{props.message.intent}</pre>
-                </div>
-              </Show>
-              <Show when={props.message.reasoning}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                    <span style={{ color: '#f57c00', fontWeight: 500 }}>💡 推理 (Decide)</span>
-                  </div>
-                  <pre style={{
-                    margin: '0',
-                    padding: '8px',
-                    backgroundColor: 'white',
-                    borderRadius: '4px',
-                    fontSize: '11px',
-                    whiteSpace: 'pre-wrap',
-                    color: '#333',
-                  }}>{props.message.reasoning}</pre>
-                </div>
-              </Show>
-            </div>
-          </Show>
-        </div>
-      </Show>
-
+      {/* 工具调用内联展示（OpenCode 风格） */}
       <Show when={props.message.toolCalls && props.message.toolCalls.length > 0}>
         <div style={{ maxWidth: '80%', marginTop: '8px', width: '100%' }}>
           <ToolCallList toolCalls={props.message.toolCalls!} />

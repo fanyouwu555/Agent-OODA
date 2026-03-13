@@ -4164,3 +4164,372 @@ body {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ========== 消息展示样式（参考 OpenCode） ========== */
+
+/* 消息内容包装器 */
+.message-content-wrapper {
+  width: 100%;
+}
+
+/* 消息时间戳徽章 */
+.queued-badge,
+.error-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 8px;
+  text-transform: uppercase;
+}
+
+.queued-badge {
+  background: var(--warning);
+  color: #000;
+}
+
+.error-badge {
+  background: var(--error);
+  color: #fff;
+}
+
+/* Markdown 渲染器样式 */
+.markdown-renderer {
+  width: 100%;
+  line-height: 1.7;
+}
+
+.markdown-renderer h1 {
+  font-size: 1.8em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.3em;
+}
+
+.markdown-renderer h2 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 0.7em 0 0.3em;
+  color: var(--text-primary);
+}
+
+.markdown-renderer h3 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+  color: var(--text-primary);
+}
+
+.markdown-renderer h4 {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 0.5em 0 0.2em;
+  color: var(--text-primary);
+}
+
+.markdown-renderer p {
+  margin: 0.5em 0;
+}
+
+.markdown-renderer ul,
+.markdown-renderer ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-renderer li {
+  margin: 0.3em 0;
+}
+
+.markdown-renderer blockquote {
+  border-left: 3px solid var(--accent-primary);
+  padding-left: 1em;
+  margin: 0.8em 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.markdown-renderer hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 1em 0;
+}
+
+.markdown-renderer a {
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+.markdown-renderer a:hover {
+  text-decoration: underline;
+}
+
+.markdown-renderer strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.markdown-renderer em {
+  font-style: italic;
+}
+
+.markdown-renderer code.inline-code {
+  background: var(--bg-tertiary);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  color: var(--accent-secondary);
+}
+
+.markdown-renderer del {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* 表格样式 */
+.markdown-renderer table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+}
+
+.markdown-renderer th,
+.markdown-renderer td {
+  border: 1px solid var(--border-color);
+  padding: 0.5em 0.8em;
+  text-align: left;
+}
+
+.markdown-renderer th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.markdown-renderer tr:nth-child(even) {
+  background: var(--bg-secondary);
+}
+
+/* 图片样式 */
+.markdown-image-wrapper {
+  margin: 0.8em 0;
+}
+
+.markdown-image-wrapper img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: transform var(--transition-fast);
+}
+
+.markdown-image-wrapper img.expanded {
+  max-width: none;
+  transform: scale(1.02);
+}
+
+.markdown-image-wrapper .image-caption {
+  display: block;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  margin-top: 0.4em;
+}
+
+/* ========== 输入区域左对齐样式 ========== */
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.input-row .input-model-selector {
+  flex-shrink: 0;
+}
+
+.input-row .input-model-selector .model-select {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.input-row .input-model-selector .model-select:hover {
+  border-color: var(--accent-primary);
+}
+
+.input-row .input-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-row .input-container textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ========== OODA 流式过程展示样式 ========== */
+.ooda-streaming {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+
+.ooda-streaming .ooda-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid;
+}
+
+.ooda-streaming .ooda-item.thinking {
+  border-color: var(--accent-primary);
+}
+
+.ooda-streaming .ooda-item.intent {
+  border-color: var(--success);
+}
+
+.ooda-streaming .ooda-item.reasoning {
+  border-color: var(--warning);
+}
+
+.ooda-streaming .ooda-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.ooda-streaming .ooda-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  min-width: 36px;
+}
+
+.ooda-streaming .ooda-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 加载状态 */
+.streaming-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  color: var(--text-secondary);
+}
+
+.streaming-loading .loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ========== SSE 事件日志样式 ========== */
+.sse-logs {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+}
+
+.sse-logs-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sse-logs-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.sse-logs-toggle .toggle-icon {
+  font-size: 10px;
+}
+
+.sse-logs-list {
+  margin-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+}
+
+.sse-log-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+}
+
+.sse-log-item:last-child {
+  border-bottom: none;
+}
+
+.sse-log-item .log-type {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--accent-primary);
+  color: white;
+  flex-shrink: 0;
+}
+
+.sse-log-item.thinking .log-type { background: var(--accent-primary); }
+.sse-log-item.intent .log-type { background: var(--success); }
+.sse-log-item.reasoning .log-type { background: var(--warning); color: #000; }
+.sse-log-item.tool_call .log-type { background: var(--info); }
+.sse-log-item.tool_result .log-type { background: var(--success); }
+.sse-log-item.content .log-type { background: var(--accent-secondary); }
+.sse-log-item.result .log-type { background: var(--success); }
+.sse-log-item.error .log-type { background: var(--error); }
+
+.sse-log-item .log-content {
+  flex: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sse-log-item .log-time {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}

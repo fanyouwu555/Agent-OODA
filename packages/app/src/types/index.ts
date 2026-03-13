@@ -7,6 +7,11 @@ export interface Message {
   thinking?: string;
   intent?: string;
   reasoning?: string;
+  // 扩展属性（参考 OpenCode）
+  status?: 'pending' | 'running' | 'completed' | 'error';
+  isQueued?: boolean;  // 是否排队中
+  error?: string;      // 错误信息
+  updatedAt?: number;  // 更新时间
 }
 
 export interface ToolCall {

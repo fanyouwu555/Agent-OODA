@@ -5,6 +5,7 @@ import { createWebSocketClient } from './services/websocket';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { ToastContainer, showToast } from './components/Toast';
 import { Typewriter, SmartTypewriter } from './components/Typewriter';
+import { MarkdownRenderer } from './components/MarkdownRenderer';
 
 const SESSION_STORAGE_KEY = 'ooda-agent-session-id';
 
@@ -540,6 +541,10 @@ function App() {
   const [streamingContent, setStreamingContent] = createSignal<string>('');
   const [isStreaming, setIsStreaming] = createSignal<boolean>(false);
   
+  // SSE 事件日志
+  const [sseLogs, setSseLogs] = createSignal<Array<{type: string; content?: string; time: number}>>([]);
+  const [showSseLogs, setShowSseLogs] = createSignal(false);
+  
   // 新布局状态
   const [showSessionHistory, setShowSessionHistory] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
@@ -944,7 +949,15 @@ function App() {
   };
 
   const handleSSEEvent = (event: SSEEvent) => {
-    switch (event.type) {
+    // 使用 queueMicrotask 确保 UI 更新
+    queueMicrotask(() => {
+      // 调试日志
+      console.log('[SSE Client] Received event:', event.type, event.content?.substring(0, 50));
+      
+      // 记录 SSE 事件日志
+      setSseLogs(prev => [...prev.slice(-20), { type: event.type, content: event.content?.substring(0, 100), time: Date.now() }]);
+      
+      switch (event.type) {
       case 'thinking':
         setOodaStep('Orient: 理解意图...');
         if (event.content) {
@@ -1011,6 +1024,7 @@ function App() {
           setCurrentReasoning('');
           setStreamingContent('');
           setIsStreaming(false);
+          setSseLogs([]);
         }
         break;
       case 'error':
@@ -1028,6 +1042,7 @@ function App() {
         // Stream ended, do nothing
         break;
     }
+    });
   };
 
   const handleConfirmation = async (id: string, allowed: boolean) => {
@@ -1171,127 +1186,74 @@ function App() {
 
       {/* 主内容区 */}
       <main class="main-content new-main">
-        <Show when={isLoading() && oodaStep()}>
-          <div class="ooda-progress">
-            <div class="progress-header">
-              <div class="progress-spinner">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="0">
-                    <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
-                  </circle>
-                </svg>
-              </div>
-              <span class="progress-step">{oodaStep()}</span>
-            </div>
-            <div class="progress-details">
-              <Show when={currentThinking()}>
-                <div class="detail-item thinking">
-                  <div class="detail-icon">💭</div>
-                  <div class="detail-content">
-                    <span class="detail-label">思考</span>
-                    <p class="detail-text">{currentThinking()}</p>
-                  </div>
-                </div>
-              </Show>
-              <Show when={currentIntent()}>
-                <div class="detail-item intent">
-                  <div class="detail-icon">🎯</div>
-                  <div class="detail-content">
-                    <span class="detail-label">意图</span>
-                    <p class="detail-text">{currentIntent()}</p>
-                  </div>
-                </div>
-              </Show>
-              <Show when={currentReasoning()}>
-                <div class="detail-item reasoning">
-                  <div class="detail-icon">💡</div>
-                  <div class="detail-content">
-                    <span class="detail-label">推理</span>
-                    <p class="detail-text">{currentReasoning()}</p>
-                  </div>
-                </div>
-              </Show>
-            </div>
-          </div>
-        </Show>
-
-        {/* 流式内容显示区域 */}
-        <Show when={isStreaming() && streamingContent()}>
+        {/* 流式内容显示区域 - 包含 OODA 过程内联展示 */}
+        <Show when={isStreaming() || isLoading()}>
           <div class="streaming-content">
-            <div class="streaming-header">
-              <div class="streaming-indicator">
-                <span class="streaming-dot"></span>
-                <span>正在生成回复...</span>
-              </div>
-            </div>
-            <div class="streaming-text">
-              <Typewriter 
-                text={streamingContent()} 
-                speed={20}
-                class="streaming-typewriter"
-              />
-            </div>
-          </div>
-        </Show>
-
-        <Show when={currentToolCalls().length > 0}>
-          <div class="tool-calls-panel">
-            <div class="panel-header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-              </svg>
-              <span>工具调用</span>
-            </div>
-            <div class="tool-calls-list">
-              <For each={currentToolCalls()}>
-                {(tool) => (
-                  <div class={`tool-item ${tool.status}`}>
-                    <div class="tool-header">
-                      <div class="tool-status-icon">
-                        <Show when={tool.status === 'running'} fallback={
-                          <Show when={tool.status === 'success'} fallback={
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                              <circle cx="12" cy="12" r="10"/>
-                              <line x1="15" y1="9" x2="9" y2="15"/>
-                              <line x1="9" y1="9" x2="15" y2="15"/>
-                            </svg>
-                          }>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                              <polyline points="22 4 12 14.01 9 11.01"/>
-                            </svg>
-                          </Show>
-                        }>
-                          <div class="spinner-small"></div>
-                        </Show>
-                      </div>
-                      <span class="tool-name">{tool.name}</span>
-                      <Show when={tool.endTime}>
-                        <span class="tool-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
-                      </Show>
-                    </div>
-                    <Show when={Object.keys(tool.args).length > 0}>
-                      <div class="tool-args">
-                        <span class="args-label">参数:</span>
-                        <pre class="args-content">{JSON.stringify(tool.args, null, 2)}</pre>
-                      </div>
-                    </Show>
-                    <Show when={tool.result !== undefined && tool.status === 'success'}>
-                      <div class="tool-result-preview">
-                        <span class="result-label">结果:</span>
-                        <pre class="result-content">{typeof tool.result === 'string' ? tool.result.substring(0, 200) + (tool.result.length > 200 ? '...' : '') : JSON.stringify(tool.result, null, 2).substring(0, 200)}</pre>
-                      </div>
-                    </Show>
-                    <Show when={tool.error}>
-                      <div class="tool-error">
-                        <span class="error-label">错误:</span>
-                        <span class="error-text">{tool.error}</span>
-                      </div>
-                    </Show>
+            {/* OODA 过程实时展示 */}
+            <Show when={currentThinking() || currentIntent() || currentReasoning()}>
+              <div class="ooda-streaming">
+                <Show when={currentThinking()}>
+                  <div class="ooda-item thinking">
+                    <span class="ooda-icon">💭</span>
+                    <span class="ooda-label">思考</span>
+                    <span class="ooda-text">{currentThinking()}</span>
                   </div>
-                )}
-              </For>
-            </div>
+                </Show>
+                <Show when={currentIntent()}>
+                  <div class="ooda-item intent">
+                    <span class="ooda-icon">🎯</span>
+                    <span class="ooda-label">意图</span>
+                    <span class="ooda-text">{currentIntent()}</span>
+                  </div>
+                </Show>
+                <Show when={currentReasoning()}>
+                  <div class="ooda-item reasoning">
+                    <span class="ooda-icon">💡</span>
+                    <span class="ooda-label">推理</span>
+                    <span class="ooda-text">{currentReasoning()}</span>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+            {/* 流式内容 */}
+            <Show when={streamingContent()}>
+              <div class="streaming-text">
+                <Typewriter 
+                  text={streamingContent()} 
+                  speed={20}
+                  class="streaming-typewriter"
+                />
+              </div>
+            </Show>
+            {/* 加载状态 */}
+            <Show when={!streamingContent() && isLoading()}>
+              <div class="streaming-loading">
+                <div class="loading-spinner"></div>
+                <span>正在思考...</span>
+              </div>
+            </Show>
+            {/* SSE 事件日志 - 可展开 */}
+            <Show when={sseLogs().length > 0}>
+              <div class="sse-logs">
+                <button class="sse-logs-toggle" onClick={() => setShowSseLogs(!showSseLogs())}>
+                  <span>SSE 事件 ({sseLogs().length})</span>
+                  <span class="toggle-icon">{showSseLogs() ? '▼' : '▶'}</span>
+                </button>
+                <Show when={showSseLogs()}>
+                  <div class="sse-logs-list">
+                    <For each={sseLogs()}>
+                      {(log) => (
+                        <div class={`sse-log-item ${log.type}`}>
+                          <span class="log-type">{log.type}</span>
+                          <span class="log-content">{log.content || '(无)'}</span>
+                          <span class="log-time">{new Date(log.time).toLocaleTimeString()}</span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+            </Show>
           </div>
         </Show>
 
@@ -1336,96 +1298,8 @@ function App() {
                       <span class="message-time">{formatTime(msg.timestamp)}</span>
                     </div>
                     <div class="message-content">
-                      <p>{msg.content}</p>
+                      <MarkdownRenderer content={msg.content} />
                     </div>
-                    <Show when={msg.role === 'assistant' && (msg.thinking || msg.intent || msg.reasoning)}>
-                      <div class="message-ooda-section">
-                        <div class="ooda-section-header">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"/>
-                            <path d="M12 6v6l4 2"/>
-                          </svg>
-                          <span>OODA 决策过程</span>
-                        </div>
-                        <div class="ooda-steps">
-                          <Show when={msg.thinking}>
-                            <div class="ooda-step thinking">
-                              <div class="step-icon">💭</div>
-                              <div class="step-content">
-                                <span class="step-label">思考 (Observe)</span>
-                                <p class="step-text">{msg.thinking}</p>
-                              </div>
-                            </div>
-                          </Show>
-                          <Show when={msg.intent}>
-                            <div class="ooda-step intent">
-                              <div class="step-icon">🎯</div>
-                              <div class="step-content">
-                                <span class="step-label">意图 (Orient)</span>
-                                <p class="step-text">{msg.intent}</p>
-                              </div>
-                            </div>
-                          </Show>
-                          <Show when={msg.reasoning}>
-                            <div class="ooda-step reasoning">
-                              <div class="step-icon">💡</div>
-                              <div class="step-content">
-                                <span class="step-label">推理 (Decide)</span>
-                                <p class="step-text">{msg.reasoning}</p>
-                              </div>
-                            </div>
-                          </Show>
-                        </div>
-                      </div>
-                    </Show>
-                    <Show when={msg.toolCalls && msg.toolCalls.length > 0}>
-                      <div class="message-tools-section">
-                        <div class="tools-section-header">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                          </svg>
-                          <span>工具调用 ({msg.toolCalls!.length})</span>
-                        </div>
-                        <div class="tools-list">
-                          <For each={msg.toolCalls}>
-                            {(tool) => (
-                              <div class={`message-tool-item ${tool.status}`}>
-                                <div class="tool-item-header">
-                                  <Show when={tool.status === 'success'} fallback={
-                                    <Show when={tool.status === 'error'} fallback={
-                                      <div class="tool-status pending"></div>
-                                    }>
-                                      <div class="tool-status error"></div>
-                                    </Show>
-                                  }>
-                                    <div class="tool-status success"></div>
-                                  </Show>
-                                  <span class="tool-item-name">{tool.name}</span>
-                                  <Show when={tool.endTime}>
-                                    <span class="tool-item-time">{((tool.endTime! - tool.startTime) / 1000).toFixed(2)}s</span>
-                                  </Show>
-                                </div>
-                                <Show when={Object.keys(tool.args).length > 0}>
-                                  <div class="tool-item-args">
-                                    <span class="args-label">参数:</span>
-                                    <pre>{JSON.stringify(tool.args, null, 2)}</pre>
-                                  </div>
-                                </Show>
-                                <Show when={tool.result !== undefined}>
-                                  <div class="tool-item-result">
-                                    <span class="result-label">结果:</span>
-                                    <pre class="result-content">{typeof tool.result === 'string' ? tool.result.substring(0, 500) + (tool.result.length > 500 ? '...' : '') : JSON.stringify(tool.result, null, 2).substring(0, 500)}</pre>
-                                  </div>
-                                </Show>
-                                <Show when={tool.error}>
-                                  <div class="tool-item-error">{tool.error}</div>
-                                </Show>
-                              </div>
-                            )}
-                          </For>
-                        </div>
-                      </div>
-                    </Show>
                   </div>
                 </div>
               )}
@@ -1452,59 +1326,62 @@ function App() {
         </div>
 
         <footer class="input-area">
-          {/* 输入框上方模型选择器 */}
-          <div class="input-model-selector">
-            <select 
-              class="model-select"
-              value={`${modelInfo().provider}/${modelInfo().name}`}
-              onChange={(e) => {
-                const [provider, model] = e.currentTarget.value.split('/');
-                switchModel(provider, model);
-              }}
-            >
-              <For each={providers()}>
-                {(provider) => (
-                  <optgroup label={provider.name}>
-                    <For each={provider.models}>
-                      {(model) => (
-                        <option value={`${provider.name}/${model.name}`}>
-                          {model.name}
-                        </option>
-                      )}
-                    </For>
-                  </optgroup>
-                )}
-              </For>
-            </select>
-          </div>
-          <div class="input-container">
-            <textarea
-              value={message()}
-              onInput={(e) => setMessage(e.currentTarget.value)}
-              placeholder="输入你的问题..."
-              disabled={isLoading()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              rows={1}
-            />
-            <button 
-              class="send-btn" 
-              onClick={sendMessage}
-              disabled={isLoading() || !message().trim()}
-            >
-              <Show when={!isLoading()} fallback={
-                <div class="btn-spinner"></div>
-              }>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="22" y1="2" x2="11" y2="13"/>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                </svg>
-              </Show>
-            </button>
+          <div class="input-row">
+            {/* 左侧模型选择器 */}
+            <div class="input-model-selector">
+              <select 
+                class="model-select"
+                value={`${modelInfo().provider}/${modelInfo().name}`}
+                onChange={(e) => {
+                  const [provider, model] = e.currentTarget.value.split('/');
+                  switchModel(provider, model);
+                }}
+              >
+                <For each={providers()}>
+                  {(provider) => (
+                    <optgroup label={provider.name}>
+                      <For each={provider.models}>
+                        {(model) => (
+                          <option value={`${provider.name}/${model.name}`}>
+                            {model.name}
+                          </option>
+                        )}
+                      </For>
+                    </optgroup>
+                  )}
+                </For>
+              </select>
+            </div>
+            {/* 左侧输入框 */}
+            <div class="input-container">
+              <textarea
+                value={message()}
+                onInput={(e) => setMessage(e.currentTarget.value)}
+                placeholder="输入你的问题..."
+                disabled={isLoading()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
+                rows={1}
+              />
+              <button 
+                class="send-btn" 
+                onClick={sendMessage}
+                disabled={isLoading() || !message().trim()}
+              >
+                <Show when={!isLoading()} fallback={
+                  <div class="btn-spinner"></div>
+                }>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="22" y1="2" x2="11" y2="13"/>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                  </svg>
+                </Show>
+              </button>
+            </div>
           </div>
           <p class="input-hint">按 Enter 发送，Shift + Enter 换行</p>
         </footer>
