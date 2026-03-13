@@ -28,12 +28,14 @@ interface LoopContext {
 }
 
 export interface OODAEvent {
-  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete' | 'feedback' | 'adaptation';
+  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete' | 'feedback' | 'adaptation' | 'streaming_content';
   data?: {
     intent?: string;
     reasoning?: string;
     options?: string[];
     selectedOption?: string;
+    chunk?: string;
+    output?: string;  // complete 事件中的输出内容
     toolCall?: {
       id: string;
       name: string;
@@ -225,7 +227,14 @@ export class OODALoop {
     
     this.cleanupCache();
     
-    const completeEvent = { phase: 'complete' as const };
+    // 在 complete 事件中包含输出内容
+    const output = state.result?.output || '';
+    const completeEvent = { 
+      phase: 'complete' as const,
+      data: {
+        output,
+      }
+    };
     await callback(completeEvent);
     await this.streamingManager?.handleOODAEvent(completeEvent);
     

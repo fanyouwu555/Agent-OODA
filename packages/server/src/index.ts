@@ -7,6 +7,9 @@ config({ path: resolve(process.cwd(), '..', '..', '.env') });
 import { Hono } from 'hono';
 import { sessionRoutes, handleWebSocketMessage, cleanupWebSocket, setupHeartbeat } from './routes/session';
 import { authRoutes } from './routes/auth';
+import { permissionRoutes } from './routes/permissions';
+import { agentRoutes } from './routes/agents';
+import { toolRoutes } from './routes/tools';
 import { cors } from 'hono/cors';
 import { apiRateLimit } from './middleware/rate-limit';
 import { requestLogger } from './middleware/logger';
@@ -140,6 +143,9 @@ async function main() {
   app.use('/api/*', apiRateLimit);
 
   app.route('/api/auth', authRoutes);
+  app.route('/api/permissions', permissionRoutes);
+  app.route('/api/agents', agentRoutes);
+  app.route('/api/tools', toolRoutes);
   app.route('/api', sessionRoutes);
 
   app.get('/health', (c) => {

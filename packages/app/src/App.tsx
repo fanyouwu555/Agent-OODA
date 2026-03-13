@@ -1,13 +1,10 @@
 import { createSignal, createEffect, onMount, Show, For, onCleanup } from 'solid-js';
-import type { Message, Skill, ConfirmationRequest, ToolCall, SSEEvent, ModelInfo, Provider } from './types';
+import type { Message, Skill, ConfirmationRequest, ToolCall, SSEEvent, ModelInfo, Provider, AgentInstance, SessionListItem } from './types';
 import { apiClient } from './services/api';
 import { createWebSocketClient } from './services/websocket';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { ToastContainer, showToast } from './components/Toast';
-import { SessionList } from './components/SessionList';
-import { AgentConfigPanel } from './components/AgentConfigPanel';
-import { ToolRegistryPanel } from './components/ToolRegistryPanel';
-import { PermissionPanel } from './components/PermissionPanel';
+import { Typewriter, SmartTypewriter } from './components/Typewriter';
 
 const SESSION_STORAGE_KEY = 'ooda-agent-session-id';
 
@@ -35,6 +32,289 @@ function clearSessionIdFromStorage(): void {
   }
 }
 
+// 组件：Agent下拉选择器
+function AgentSelector(props: {
+  currentAgent: string;
+  agents: AgentInstance[];
+  onSelect: (name: string) => void;
+}) {
+  const [isOpen, setIsOpen] = createSignal(false);
+
+  return (
+    <div class="agent-selector-dropdown">
+      <button class="agent-selector-trigger" onClick={() => setIsOpen(!isOpen())}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2a10 10 0 1 0 10 10H12V2z"/>
+          <path d="M12 2a10 10 0 0 1 10 10"/>
+        </svg>
+        <span>{props.currentAgent}</span>
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
+      <Show when={isOpen()}>
+        <div class="agent-dropdown-menu">
+          <For each={props.agents}>
+            {(agent) => (
+              <button
+                class={`agent-option ${props.currentAgent === agent.config.name ? 'active' : ''}`}
+                onClick={() => {
+                  props.onSelect(agent.config.name);
+                  setIsOpen(false);
+                }}
+              >
+                <span class="agent-option-icon">{agent.config.metadata?.icon || '🤖'}</span>
+                <div class="agent-option-info">
+                  <span class="agent-option-name">{agent.config.displayName || agent.config.name}</span>
+                  <span class="agent-option-desc">{agent.config.description}</span>
+                </div>
+                <Show when={props.currentAgent === agent.config.name}>
+                  <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 6L9 17l-5-5"/>
+                  </svg>
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
+        <div class="dropdown-backdrop" onClick={() => setIsOpen(false)} />
+      </Show>
+    </div>
+  );
+}
+
+// 组件：会话历史弹窗
+function SessionHistoryPopup(props: {
+  isOpen: boolean;
+  onClose: () => void;
+  currentSessionId: string;
+  sessions: Array<{ id: string; title?: string; messageCount: number; updatedAt?: number }>;
+  onSelectSession: (id: string) => void;
+  onNewSession: () => void;
+}) {
+  const [activeTab, setActiveTab] = createSignal<'active' | 'archived'>('active');
+
+  const formatTime = (timestamp?: number) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    if (diff < 60000) return '刚刚';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+    return date.toLocaleDateString('zh-CN');
+  };
+
+  return (
+    <Show when={props.isOpen}>
+      <div class="popup-overlay" onClick={props.onClose}>
+        <div class="session-popup" onClick={(e) => e.stopPropagation()}>
+          <div class="popup-header">
+            <h3>会话历史</h3>
+            <button class="popup-close" onClick={props.onClose}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          
+          <button class="new-session-btn-large" onClick={() => {
+            props.onNewSession();
+            props.onClose();
+          }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            新建会话
+          </button>
+
+          <div class="session-tabs-popup">
+            <button 
+              class={`tab-popup ${activeTab() === 'active' ? 'active' : ''}`}
+              onClick={() => setActiveTab('active')}
+            >
+              活跃
+            </button>
+            <button 
+              class={`tab-popup ${activeTab() === 'archived' ? 'active' : ''}`}
+              onClick={() => setActiveTab('archived')}
+            >
+              已归档
+            </button>
+          </div>
+
+          <div class="session-list-popup">
+            <For each={props.sessions}>
+              {(session) => (
+                <div 
+                  class={`session-item-popup ${props.currentSessionId === session.id ? 'active' : ''}`}
+                  onClick={() => {
+                    props.onSelectSession(session.id);
+                    props.onClose();
+                  }}
+                >
+                  <div class="session-info-popup">
+                    <span class="session-title-popup">{session.title || '新会话'}</span>
+                    <span class="session-meta-popup">{session.messageCount} 条消息 · {formatTime(session.updatedAt)}</span>
+                  </div>
+                </div>
+              )}
+            </For>
+            <Show when={props.sessions.length === 0}>
+              <div class="empty-sessions-popup">暂无会话</div>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
+// 组件：设置弹窗
+function SettingsPopup(props: {
+  isOpen: boolean;
+  onClose: () => void;
+  activeSection: string;
+  onSectionChange: (section: string) => void;
+  skills: Skill[];
+  modelInfo: ModelInfo;
+  providers: Provider[];
+  onSwitchModel: (provider: string, model: string) => void;
+}) {
+  const sections = [
+    { id: 'chat', name: '对话', icon: '💬' },
+    { id: 'agents', name: 'Agent', icon: '🤖' },
+    { id: 'tools', name: '工具', icon: '🔧' },
+    { id: 'permissions', name: '权限', icon: '🔒' },
+  ];
+
+  return (
+    <Show when={props.isOpen}>
+      <div class="popup-overlay" onClick={props.onClose}>
+        <div class="settings-popup" onClick={(e) => e.stopPropagation()}>
+          <div class="settings-sidebar-popup">
+            <For each={sections}>
+              {(section) => (
+                <button 
+                  class={`settings-nav-item ${props.activeSection === section.id ? 'active' : ''}`}
+                  onClick={() => props.onSectionChange(section.id)}
+                >
+                  <span class="nav-icon">{section.icon}</span>
+                  <span>{section.name}</span>
+                </button>
+              )}
+            </For>
+          </div>
+          
+          <div class="settings-content-popup">
+            <div class="popup-header">
+              <h3>{sections.find(s => s.id === props.activeSection)?.name || '设置'}</h3>
+              <button class="popup-close" onClick={props.onClose}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+
+            <Show when={props.activeSection === 'chat'}>
+              <div class="settings-section-content">
+                <div class="setting-group">
+                  <label>当前模型</label>
+                  <select 
+                    value={`${props.modelInfo.provider}/${props.modelInfo.name}`}
+                    onChange={(e) => {
+                      const [provider, model] = e.currentTarget.value.split('/');
+                      props.onSwitchModel(provider, model);
+                    }}
+                  >
+                    <For each={props.providers}>
+                      {(provider) => (
+                        <optgroup label={provider.name}>
+                          <For each={provider.models}>
+                            {(model) => (
+                              <option value={`${provider.name}/${model.name}`}>
+                                {model.name}
+                              </option>
+                            )}
+                          </For>
+                        </optgroup>
+                      )}
+                    </For>
+                  </select>
+                </div>
+                <div class="setting-group">
+                  <label>温度</label>
+                  <input type="number" value={props.modelInfo.temperature} min="0" max="2" step="0.1" />
+                </div>
+                <div class="setting-group">
+                  <label>最大Tokens</label>
+                  <input type="number" value={props.modelInfo.maxTokens} min="1000" max="32000" step="1000" />
+                </div>
+              </div>
+            </Show>
+
+            <Show when={props.activeSection === 'agents'}>
+              <div class="settings-section-content">
+                <p class="section-desc">管理Agent配置</p>
+                <div class="agents-list-compact">
+                  <div class="agent-card-compact">
+                    <span class="agent-icon">🤖</span>
+                    <div class="agent-info">
+                      <span class="agent-name">Default Agent</span>
+                      <span class="agent-desc">默认OODA Agent</span>
+                    </div>
+                    <span class="agent-badge-active">活动中</span>
+                  </div>
+                </div>
+              </div>
+            </Show>
+
+            <Show when={props.activeSection === 'tools'}>
+              <div class="settings-section-content">
+                <p class="section-desc">可用工具 ({props.skills.length})</p>
+                <div class="tools-grid-popup">
+                  <For each={props.skills}>
+                    {(skill) => (
+                      <div class="tool-item-popup">
+                        <span class="tool-name">{skill.name}</span>
+                        <span class="tool-category">{skill.category}</span>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+            </Show>
+
+            <Show when={props.activeSection === 'permissions'}>
+              <div class="settings-section-content">
+                <p class="section-desc">权限管理</p>
+                <div class="permission-options">
+                  <div class="permission-item">
+                    <span>文件读取</span>
+                    <select><option value="allow">允许</option><option value="ask">询问</option><option value="deny">拒绝</option></select>
+                  </div>
+                  <div class="permission-item">
+                    <span>文件写入</span>
+                    <select><option value="ask">询问</option><option value="allow">允许</option><option value="deny">拒绝</option></select>
+                  </div>
+                  <div class="permission-item">
+                    <span>执行命令</span>
+                    <select><option value="ask">询问</option><option value="allow">允许</option><option value="deny">拒绝</option></select>
+                  </div>
+                  <div class="permission-item">
+                    <span>网络请求</span>
+                    <select><option value="allow">允许</option><option value="ask">询问</option><option value="deny">拒绝</option></select>
+                  </div>
+                </div>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
 function App() {
   const [sessionId, setSessionId] = createSignal('');
   const [message, setMessage] = createSignal('');
@@ -50,8 +330,16 @@ function App() {
   const [currentIntent, setCurrentIntent] = createSignal<string>('');
   const [currentReasoning, setCurrentReasoning] = createSignal<string>('');
   const [oodaStep, setOodaStep] = createSignal<string>('');
-  const [sidebarOpen, setSidebarOpen] = createSignal(true);
-  const [activeTab, setActiveTab] = createSignal<'sessions' | 'models' | 'skills' | 'agents' | 'tools' | 'permissions' | 'settings'>('sessions');
+  const [streamingContent, setStreamingContent] = createSignal<string>('');
+  const [isStreaming, setIsStreaming] = createSignal<boolean>(false);
+  
+  // 新布局状态
+  const [showSessionHistory, setShowSessionHistory] = createSignal(false);
+  const [showSettings, setShowSettings] = createSignal(false);
+  const [settingsSection, setSettingsSection] = createSignal('chat');
+  const [currentAgent, setCurrentAgent] = createSignal('default');
+  const [agents, setAgents] = createSignal<AgentInstance[]>([]);
+  const [sessions, setSessions] = createSignal<SessionListItem[]>([]);
 
   let messagesContainer: HTMLDivElement | undefined;
   let wsClient: ReturnType<typeof createWebSocketClient>;
@@ -128,7 +416,7 @@ function App() {
       setSessionId(result.data.sessionId);
       saveSessionIdToStorage(result.data.sessionId);
     } else {
-      showToast('error', result.error || '创建会话失败');
+      showToast('error', '创建会话失败');
     }
   };
   
@@ -197,9 +485,34 @@ function App() {
     }
   };
 
+  let agentsLoaded = false;
+  const loadAgents = async () => {
+    if (agentsLoaded) return;
+    agentsLoaded = true;
+    const result = await apiClient.getAgents();
+    if (result.success && result.data) {
+      setAgents(result.data.agents);
+      if (result.data.default) {
+        setCurrentAgent(result.data.default);
+      }
+    }
+  };
+
+  let sessionsLoaded = false;
+  const loadSessions = async () => {
+    if (sessionsLoaded) return;
+    sessionsLoaded = true;
+    const result = await apiClient.getSessions();
+    if (result.success && result.data) {
+      setSessions(result.data);
+    }
+  };
+
   onMount(() => {
     loadSkills();
     loadModels();
+    loadAgents();
+    loadSessions();
   });
 
   const switchModel = async (providerName: string, modelName: string) => {
@@ -241,6 +554,8 @@ function App() {
     setCurrentThinking('');
     setCurrentIntent('');
     setCurrentReasoning('');
+    setStreamingContent('');  // 重置流式内容
+    setIsStreaming(false);
     setOodaStep('Observe: 分析用户输入...');
 
     try {
@@ -303,13 +618,22 @@ function App() {
           });
         }
         break;
+      case 'content':
+        // 流式内容事件 - 增量更新消息
+        if (event.content !== undefined) {
+          setIsStreaming(true);
+          setStreamingContent((prev) => prev + event.content);
+        }
+        break;
       case 'result':
         setOodaStep('完成');
-        if (event.content) {
+        // 优先使用流式内容，否则使用 event.content
+        const finalContent = streamingContent() || event.content || '';
+        if (finalContent) {
           const assistantMessage: Message = {
             id: Date.now().toString(),
             role: 'assistant',
-            content: event.content,
+            content: finalContent,
             timestamp: Date.now(),
             toolCalls: currentToolCalls(),
             thinking: currentThinking(),
@@ -321,11 +645,15 @@ function App() {
           setCurrentThinking('');
           setCurrentIntent('');
           setCurrentReasoning('');
+          setStreamingContent('');
+          setIsStreaming(false);
         }
         break;
       case 'error':
         showToast('error', event.content || '发生错误');
         setOodaStep('错误');
+        setStreamingContent('');
+        setIsStreaming(false);
         break;
       case 'confirmation':
         if (event.confirmation) {
@@ -370,7 +698,7 @@ function App() {
   };
 
   return (
-    <div class="app-container">
+    <div class="app-container new-layout">
       <ToastContainer />
       
       <ConfirmationDialog
@@ -378,227 +706,80 @@ function App() {
         onConfirm={handleConfirmation}
       />
 
-      <aside class={`sidebar ${sidebarOpen() ? 'open' : 'closed'}`}>
-        <div class="sidebar-header">
-          <div class="logo">
-            <div class="logo-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <path d="M12 6v6l4 2"/>
-              </svg>
-            </div>
-            <Show when={sidebarOpen()}>
-              <span class="logo-text">OODA Agent</span>
-            </Show>
-          </div>
-          <button class="sidebar-toggle" onClick={() => setSidebarOpen(!sidebarOpen())}>
+      {/* 紧凑顶部导航栏 */}
+      <header class="top-nav">
+        <div class="nav-left">
+          <button class="nav-icon-btn" onClick={() => {
+            loadSessions();
+            setShowSessionHistory(true);
+          }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d={sidebarOpen() ? "M15 18l-6-6 6-6" : "M9 18l6-6-6-6"}/>
+              <path d="M3 12h18M3 6h18M3 18h18"/>
             </svg>
           </button>
+          <div class="logo-compact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+            <span>OODA</span>
+          </div>
         </div>
 
-        <Show when={sidebarOpen()}>
-          <div class="sidebar-tabs">
-            <button 
-              class={`tab ${activeTab() === 'sessions' ? 'active' : ''}`}
-              onClick={() => setActiveTab('sessions')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-              </svg>
-              会话
-            </button>
-            <button 
-              class={`tab ${activeTab() === 'models' ? 'active' : ''}`}
-              onClick={() => setActiveTab('models')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="3" width="20" height="14" rx="2"/>
-                <path d="M8 21h8M12 17v4"/>
-              </svg>
-              模型
-            </button>
-            <button 
-              class={`tab ${activeTab() === 'skills' ? 'active' : ''}`}
-              onClick={() => setActiveTab('skills')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-              </svg>
-              技能
-            </button>
-            <button 
-              class={`tab ${activeTab() === 'settings' ? 'active' : ''}`}
-              onClick={() => setActiveTab('settings')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-              </svg>
-              设置
-            </button>
-          </div>
-        </Show>
-
-        <div class="sidebar-content">
-          <Show when={sidebarOpen() && activeTab() === 'sessions'}>
-            <SessionList
-              currentSessionId={sessionId()}
-              onSelectSession={switchSession}
-              onNewSession={createNewSession}
-              onClearAll={async () => {
-                clearSessionIdFromStorage();
-                await createNewSession();
-              }}
-            />
-          </Show>
-          <Show when={sidebarOpen() && activeTab() === 'models'}>
-            <div class="models-section">
-              <div class="section-title">
-                <span>可用模型</span>
-                <div class="connection-status">
-                  <div class={`status-dot ${connectionStatus()}`}></div>
-                  <span>{connectionStatus() === 'connected' ? '已连接' : connectionStatus() === 'connecting' ? '连接中' : '已断开'}</span>
-                </div>
-              </div>
-              
-              <For each={providers()}>
-                {(provider) => (
-                  <div class="provider-group">
-                    <div class="provider-header">
-                      <span class="provider-name">{provider.name}</span>
-                      <span class="provider-type">{provider.type}</span>
-                    </div>
-                    <div class="model-list">
-                      <For each={provider.models}>
-                        {(model) => {
-                          const isActive = () => modelInfo().provider === provider.name && modelInfo().name === model.name;
-                          return (
-                            <div 
-                              class={`model-card ${isActive() ? 'active' : ''}`}
-                              onClick={() => switchModel(provider.name, model.name)}
-                            >
-                              <div class="model-info">
-                                <span class="model-name">{model.name}</span>
-                                <Show when={isActive()}>
-                                  <span class="active-badge">当前</span>
-                                </Show>
-                              </div>
-                              <div class="model-params">
-                                <span>温度: {model.temperature || 0.7}</span>
-                                <span>Tokens: {model.maxTokens || 2000}</span>
-                              </div>
-                            </div>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  </div>
-                )}
-              </For>
-            </div>
-          </Show>
-
-          <Show when={sidebarOpen() && activeTab() === 'skills'}>
-            <div class="skills-section">
-              <div class="section-title">
-                <span>可用技能</span>
-                <span class="skill-count">{skills().length}</span>
-              </div>
-              <div class="skill-list">
-                <For each={skills()}>
-                  {(skill) => (
-                    <div class="skill-card" onClick={() => callSkill(skill.name)}>
-                      <div class="skill-header">
-                        <span class="skill-name">{skill.name}</span>
-                        <span class="skill-version">v{skill.version}</span>
-                      </div>
-                      <p class="skill-desc">{skill.description}</p>
-                      <span class="skill-category">{skill.category}</span>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </div>
-          </Show>
-
-          <Show when={sidebarOpen() && activeTab() === 'agents'}>
-            <AgentConfigPanel />
-          </Show>
-
-          <Show when={sidebarOpen() && activeTab() === 'tools'}>
-            <ToolRegistryPanel />
-          </Show>
-
-          <Show when={sidebarOpen() && activeTab() === 'permissions'}>
-            <PermissionPanel />
-          </Show>
-
-          <Show when={sidebarOpen() && activeTab() === 'settings'}>
-            <div class="settings-section">
-              <div class="section-title">设置</div>
-              <div class="settings-group">
-                <div class="setting-item">
-                  <span>当前模型</span>
-                  <span class="setting-value">{modelInfo().name}</span>
-                </div>
-                <div class="setting-item">
-                  <span>提供商</span>
-                  <span class="setting-value">{modelInfo().provider}</span>
-                </div>
-                <div class="setting-item">
-                  <span>温度</span>
-                  <span class="setting-value">{modelInfo().temperature}</span>
-                </div>
-                <div class="setting-item">
-                  <span>最大Tokens</span>
-                  <span class="setting-value">{modelInfo().maxTokens}</span>
-                </div>
-              </div>
-              <button class="clear-btn" onClick={clearMessages}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3,6 5,6 21,6"/>
-                  <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6m3,0V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/>
-                </svg>
-                清空对话
-              </button>
-            </div>
-          </Show>
+        <div class="nav-center">
+          <AgentSelector 
+            currentAgent={currentAgent()} 
+            agents={agents()}
+            onSelect={(name) => setCurrentAgent(name)}
+          />
         </div>
-      </aside>
 
-      <main class="main-content">
-        <header class="main-header">
-          <div class="header-left">
-            <Show when={!sidebarOpen()}>
-              <button class="menu-btn" onClick={() => setSidebarOpen(true)}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="3" y1="12" x2="21" y2="12"/>
-                  <line x1="3" y1="6" x2="21" y2="6"/>
-                  <line x1="3" y1="18" x2="21" y2="18"/>
-                </svg>
-              </button>
-            </Show>
-            <div class="current-model">
-              <div class="model-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="2" y="3" width="20" height="14" rx="2"/>
-                  <path d="M8 21h8M12 17v4"/>
-                </svg>
-                <span>{modelInfo().name}</span>
-              </div>
-              <span class="provider-label">{modelInfo().provider}</span>
-            </div>
+        <div class="nav-right">
+          <div class="model-badge-compact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <path d="M8 21h8M12 17v4"/>
+            </svg>
+            <span>{modelInfo().name}</span>
           </div>
-          <div class="header-right">
-            <div class={`status-indicator ${connectionStatus()}`}>
-              <div class="pulse"></div>
-              <span>{connectionStatus() === 'connected' ? '在线' : connectionStatus() === 'connecting' ? '连接中' : '离线'}</span>
-            </div>
+          <button class="nav-icon-btn" onClick={() => {
+            setSettingsSection('chat');
+            setShowSettings(true);
+          }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <div class={`status-indicator-compact ${connectionStatus()}`}>
+            <div class="status-dot-compact"></div>
           </div>
-        </header>
+        </div>
+      </header>
 
+      {/* 弹窗组件 */}
+      <SessionHistoryPopup
+        isOpen={showSessionHistory()}
+        onClose={() => setShowSessionHistory(false)}
+        currentSessionId={sessionId()}
+        sessions={sessions()}
+        onSelectSession={switchSession}
+        onNewSession={createNewSession}
+      />
+
+      <SettingsPopup
+        isOpen={showSettings()}
+        onClose={() => setShowSettings(false)}
+        activeSection={settingsSection()}
+        onSectionChange={setSettingsSection}
+        skills={skills()}
+        modelInfo={modelInfo()}
+        providers={providers()}
+        onSwitchModel={switchModel}
+      />
+
+      {/* 主内容区 */}
+      <main class="main-content new-main">
         <Show when={isLoading() && oodaStep()}>
           <div class="ooda-progress">
             <div class="progress-header">
@@ -639,6 +820,25 @@ function App() {
                   </div>
                 </div>
               </Show>
+            </div>
+          </div>
+        </Show>
+
+        {/* 流式内容显示区域 */}
+        <Show when={isStreaming() && streamingContent()}>
+          <div class="streaming-content">
+            <div class="streaming-header">
+              <div class="streaming-indicator">
+                <span class="streaming-dot"></span>
+                <span>正在生成回复...</span>
+              </div>
+            </div>
+            <div class="streaming-text">
+              <Typewriter 
+                text={streamingContent()} 
+                speed={20}
+                class="streaming-typewriter"
+              />
             </div>
           </div>
         </Show>

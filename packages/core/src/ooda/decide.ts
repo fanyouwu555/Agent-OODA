@@ -10,7 +10,7 @@ import {
   IdentifiedRisk
 } from '../types';
 import { getLLMService } from '../llm/service';
-import { ChatMessage } from '../llm/provider';
+import { ChatMessage, StreamOptions } from '../llm/provider';
 
 interface DecisionAnalysis {
   problemStatement: string;
@@ -540,6 +540,49 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     });
     
     return result.text || '我理解您的请求，但暂时无法给出详细回答。';
+  }
+
+  /**
+   * 流式生成响应 - 用于实时显示生成过程
+   */
+  async *streamGenerateResponse(
+    orientation: Orientation, 
+    analysis: DecisionAnalysis,
+    onChunk?: (chunk: string) => void
+  ): AsyncGenerator<string> {
+    // 如果有预设回复，直接返回
+    if (analysis.suggestedResponse && analysis.suggestedResponse.length > 20) {
+      yield analysis.suggestedResponse;
+      return;
+    }
+    
+    const llmService = await this.getLLM();
+    
+    const history: ChatMessage[] = [];
+    if (orientation.relevantContext?.recentEvents) {
+      for (const event of orientation.relevantContext.recentEvents.slice(-5)) {
+        if (event.role === 'user' || event.role === 'assistant') {
+          history.push({
+            role: event.role,
+            content: event.content || '',
+          });
+        }
+      }
+    }
+    
+    const systemPrompt = this.buildResponseSystemPrompt(orientation);
+    const userPrompt = this.buildResponseUserPrompt(orientation, analysis);
+    
+    const options: StreamOptions = {
+      systemPrompt,
+      history,
+      maxTokens: 1500,
+      onToken: onChunk,
+    };
+    
+    for await (const token of llmService.stream(userPrompt, options)) {
+      yield token;
+    }
   }
 
   private buildResponseSystemPrompt(orientation: Orientation): string {

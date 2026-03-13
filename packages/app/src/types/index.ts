@@ -61,15 +61,16 @@ export interface SessionListItem {
 }
 
 export interface SSEEvent {
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'result' | 'error' | 'confirmation' | 'intent' | 'reasoning' | 'end';
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'result' | 'error' | 'confirmation' | 'intent' | 'reasoning' | 'end' | 'content';
   content?: string;
   toolCall?: ToolCall;
   confirmation?: ConfirmationRequest;
   status?: string;
+  fullContent?: string;  // 用于流式内容的累积
 }
 
 export interface WebSocketMessage {
-  type: 'confirmation' | 'tool_update' | 'session_update' | 'error';
+  type: 'confirmation' | 'tool_update' | 'session_update' | 'error' | 'subscribe' | 'subscribed' | 'unsubscribe' | 'unsubscribed' | 'ping' | 'pong' | 'connected';
   payload: unknown;
 }
 
@@ -255,4 +256,8 @@ export interface ToolsResponse {
 
 export interface PermissionResponse {
   config: EnhancedPermissionConfig;
+}
+
+export interface SessionsResponse {
+  sessions: SessionListItem[];
 }

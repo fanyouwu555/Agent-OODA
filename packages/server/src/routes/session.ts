@@ -266,6 +266,9 @@ sessionRoutes
         const oodaLoop = new OODALoop(sessionId);
         console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);
         
+        // 用于流式输出的累积内容
+        let streamedContent = '';
+        
         const result = await oodaLoop.runWithCallback(message, async (event) => {
           console.log(`[OODA] Event: ${event.phase}`);
           
@@ -300,6 +303,27 @@ sessionRoutes
                     endTime: Date.now()
                   } 
                 });
+              }
+              break;
+            case 'complete':
+              // OODA 循环完成，开始流式发送响应内容
+              // 注意：event.data?.output 包含最终的输出内容
+              const eventData = event.data as { output?: string } | undefined;
+              const output = eventData?.output || '';
+              console.log(`[DEBUG] complete event, output length: ${output.length}, output: ${output.substring(0, 50)}`);
+              if (output && output.length > 0) {
+                // 立即开始流式发送完整响应内容
+                const chunks = output.match(/.{1,5}/g) || [output];
+                console.log(`[DEBUG] sending ${chunks.length} content chunks`);
+                for (const chunk of chunks) {
+                  streamedContent += chunk;
+                  await sendEvent('content', { 
+                    content: chunk,
+                    fullContent: streamedContent 
+                  });
+                  // 小延迟模拟流式效果
+                  await new Promise(r => setTimeout(r, 20));
+                }
               }
               break;
           }
