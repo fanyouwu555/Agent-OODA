@@ -1,10 +1,15 @@
 import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult } from '../types';
 import { Observer, resetObserverState, initObserverLastStoredCount } from './observe';
-import { Orienter, resetOrienterState, initOrienterCompressedCount } from './orient';
-import { Decider } from './decide';
+import { Orienter, resetOrienterState, initOrienterCompressedCount, OrientThinkingCallback } from './orient';
+import { Decider, DecideThinkingCallback } from './decide';
 import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
+
+/**
+ * 合并的思考回调类型
+ */
+type ThinkingCallback = (phase: 'orient' | 'decide', type: string, content: string) => void | Promise<void>;
 
 interface CacheEntry<T> {
   value: T;
@@ -86,6 +91,7 @@ export class OODALoop {
   private sessionMemory: SessionMemory;
   private loopContext: LoopContext;
   private streamingManager?: StreamingOutputManager;
+  private thinkingCallback?: ThinkingCallback;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -135,6 +141,13 @@ export class OODALoop {
    */
   getStreamingManager(): StreamingOutputManager | undefined {
     return this.streamingManager;
+  }
+
+  /**
+   * 设置思考过程回调 - 用于实时推送 LLM 思考内容
+   */
+  setThinkingCallback(callback: ThinkingCallback): void {
+    this.thinkingCallback = callback;
   }
 
   async run(input: string): Promise<AgentResult> {
@@ -273,7 +286,17 @@ export class OODALoop {
     
     let orientStart = Date.now();
     console.log('[OODA] Getting orientation...');
-    const orientation = await this.getCachedOrientation(observation);
+    
+    let orientation: Orientation;
+    // 如果有 thinkingCallback，使用流式版本的 orient
+    if (this.thinkingCallback) {
+      const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
+        await this.thinkingCallback!('orient', type, content);
+      };
+      orientation = await this.orienter.orientStream(observation, orientThinkingCallback);
+    } else {
+      orientation = await this.getCachedOrientation(observation);
+    }
     console.log('[OODA] Orientation complete:', orientation.primaryIntent.type);
     
     this.loopContext.conversationSummary = orientation.relevantContext?.contextSummary;
@@ -290,7 +313,17 @@ export class OODALoop {
     
     let decideStart = Date.now();
     console.log('[OODA] Getting decision...');
-    const decision = await this.getCachedDecision(orientation);
+    
+    let decision: Decision;
+    // 如果有 thinkingCallback，使用流式版本的 decide
+    if (this.thinkingCallback) {
+      const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
+        await this.thinkingCallback!('decide', type, content);
+      };
+      decision = await this.decider.decideStream(orientation, decideThinkingCallback);
+    } else {
+      decision = await this.getCachedDecision(orientation);
+    }
     console.log('[OODA] Decision complete:', decision.nextAction.type);
     
     const decideEvent = { 

@@ -302,6 +302,28 @@ sessionRoutes
           }
         }, { chunkSize: 100, delayBetweenChunks: 0 });
         
+        // 设置思考过程回调 - 实时推送 LLM 思考内容
+        oodaLoop.setThinkingCallback(async (phase, type, content) => {
+          // 根据阶段和类型发送不同的 SSE 事件
+          if (phase === 'orient') {
+            if (type === 'thinking') {
+              await sendEvent('thinking', { content });
+            } else if (type === 'intent') {
+              await sendEvent('intent', { content });
+            } else if (type === 'analysis') {
+              await sendEvent('thinking', { content });
+            }
+          } else if (phase === 'decide') {
+            if (type === 'thinking') {
+              await sendEvent('thinking', { content });
+            } else if (type === 'decision') {
+              await sendEvent('reasoning', { content });
+            } else if (type === 'reasoning') {
+              await sendEvent('reasoning', { content });
+            }
+          }
+        });
+        
         console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);
         
         // 用于流式输出的累积内容

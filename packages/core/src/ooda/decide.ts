@@ -12,6 +12,11 @@ import {
 import { getLLMService } from '../llm/service';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 
+/**
+ * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
+ */
+export type DecideThinkingCallback = (type: 'thinking' | 'decision' | 'reasoning', content: string) => void | Promise<void>;
+
 interface DecisionAnalysis {
   problemStatement: string;
   options: Option[];
@@ -47,6 +52,96 @@ export class Decider {
       reasoning: analysis.reasoning,
       riskAssessment,
     };
+  }
+
+  /**
+   * 流式版本的 decide - 实时推送 LLM 决策过程
+   */
+  async decideStream(orientation: Orientation, onThinking?: DecideThinkingCallback): Promise<Decision> {
+    // 发送开始决策的消息
+    if (onThinking) {
+      await onThinking('thinking', '🎯 正在制定执行方案...');
+    }
+
+    const analysis = await this.performDecisionAnalysisStream(orientation, onThinking);
+    
+    const selectedOption = analysis.options.find(o => o.id === analysis.recommendedOption) || analysis.options[0];
+    
+    // 发送方案选择结果
+    if (onThinking) {
+      await onThinking('decision', `📋 选择方案: ${selectedOption?.description || '默认方案'}`);
+    }
+
+    const plan = await this.createPlan(orientation, selectedOption);
+    
+    if (onThinking) {
+      const taskCount = plan.subtasks.length;
+      await onThinking('thinking', taskCount > 0 
+        ? `📦 任务分解: ${taskCount} 个子任务` 
+        : '✨ 无需分解任务，直接执行');
+    }
+    
+    const nextAction = await this.selectNextAction(plan, orientation, analysis);
+    
+    // 发送最终决策
+    if (onThinking) {
+      if (nextAction.type === 'response') {
+        await onThinking('reasoning', '💬 准备生成回复...');
+      } else if (nextAction.type === 'tool_call') {
+        await onThinking('reasoning', `🔧 准备调用工具: ${nextAction.toolName}`);
+      } else if (nextAction.type === 'clarification') {
+        await onThinking('reasoning', `❓ 需要澄清: ${nextAction.clarificationQuestion}`);
+      }
+    }
+    
+    const riskAssessment = this.buildRiskAssessment(analysis);
+    
+    return {
+      problemStatement: analysis.problemStatement,
+      options: analysis.options,
+      selectedOption,
+      plan,
+      nextAction,
+      reasoning: analysis.reasoning,
+      riskAssessment,
+    };
+  }
+
+  /**
+   * 流式版本的决策分析 - 实时推送 LLM 思考过程
+   */
+  private async performDecisionAnalysisStream(
+    orientation: Orientation, 
+    onThinking?: DecideThinkingCallback
+  ): Promise<DecisionAnalysis> {
+    const llmService = await this.getLLM();
+    const prompt = this.buildDecisionPrompt(orientation);
+    
+    if (onThinking) {
+      await onThinking('thinking', '🔄 正在调用 LLM 生成决策方案...');
+    }
+    
+    // 使用流式调用 LLM
+    let fullResponse = '';
+    const streamOptions: StreamOptions = {
+      maxTokens: 200,
+      onToken: (token) => {
+        fullResponse += token;
+      },
+    };
+    
+    for await (const token of llmService.stream(prompt, streamOptions)) {
+      // 可以按需节流推送
+      if (onThinking && fullResponse.length % 30 === 0) {
+        await onThinking('decision', `💭 方案生成中: ${fullResponse.slice(-20)}...`);
+      }
+    }
+    
+    if (onThinking) {
+      await onThinking('decision', '✅ 方案生成完成');
+    }
+    
+    return this.parseDecisionResponse(fullResponse, orientation);
   }
 
   private async performDecisionAnalysis(orientation: Orientation): Promise<DecisionAnalysis> {

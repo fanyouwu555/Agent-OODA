@@ -1,8 +1,13 @@
 import { Observation, Orientation, Intent, Constraint, KnowledgeGap, Pattern, Relationship } from '../types';
 import { getLLMService } from '../llm/service';
-import { ChatMessage } from '../llm/provider';
+import { ChatMessage, StreamOptions } from '../llm/provider';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { MemoryCompressor } from '../memory/long-term';
+
+/**
+ * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
+ */
+export type OrientThinkingCallback = (type: 'thinking' | 'intent' | 'analysis', content: string) => void | Promise<void>;
 
 interface AnalysisResult {
   intentType: string;
@@ -79,6 +84,9 @@ export class Orienter {
     return getLLMService();
   }
   
+  /**
+   * 同步版本的 orient - 保持原有行为
+   */
   async orient(observation: Observation): Promise<Orientation> {
         const analysisResult = await this.performDeepAnalysis(observation);
         
@@ -102,6 +110,98 @@ export class Orienter {
             risks: analysisResult.risks,
         };
     }
+
+  /**
+   * 流式版本的 orient - 实时推送 LLM 思考过程
+   */
+  async orientStream(observation: Observation, onThinking?: OrientThinkingCallback): Promise<Orientation> {
+    // 先发送开始思考的消息
+    if (onThinking) {
+      await onThinking('thinking', '🤔 正在分析您的意图...');
+    }
+
+    const analysisResult = await this.performDeepAnalysisStream(observation, onThinking);
+    
+    const intent = this.buildIntent(analysisResult, observation.userInput);
+    
+    // 发送意图识别结果
+    if (onThinking) {
+      await onThinking('intent', `✨ 识别到意图: ${intent.type} (置信度: ${Math.round(intent.confidence * 100)}%)`);
+    }
+    
+    const constraints = this.identifyConstraints(observation, analysisResult);
+    const knowledgeGaps = this.identifyKnowledgeGaps(observation, intent, analysisResult);
+    const patterns = this.synthesizePatterns(observation, analysisResult);
+    const relationships = this.mapRelationships(observation, analysisResult);
+    
+    return {
+      primaryIntent: intent,
+      relevantContext: {
+        ...observation.context,
+        contextSummary: analysisResult.contextSummary,
+      },
+      constraints,
+      knowledgeGaps,
+      patterns,
+      relationships,
+      assumptions: analysisResult.assumptions,
+      risks: analysisResult.risks,
+    };
+  }
+
+  /**
+   * 流式版本的深度分析 - 实时推送 LLM 生成的内容
+   */
+  private async performDeepAnalysisStream(
+    observation: Observation, 
+    onThinking?: OrientThinkingCallback
+  ): Promise<AnalysisResult> {
+    const llmService = await this.getLLM();
+    
+    const allHistory = this.sessionMemory.getShortTerm().getRecentMessages(100);
+    const historyToUse = allHistory.length > 0 ? allHistory : observation.history;
+    
+    if (onThinking) {
+      await onThinking('thinking', `📚 加载历史记录: ${historyToUse.length} 条消息`);
+    }
+    
+    const { history, summary } = await this.prepareHistoryForLLM(historyToUse, llmService);
+    
+    if (onThinking) {
+      await onThinking('analysis', `📝 对话摘要: ${summary ? '已生成' : '使用简短历史'}`);
+    }
+    
+    const systemPrompt = this.buildSystemPrompt();
+    const userPrompt = this.buildAnalysisPrompt(observation, summary);
+    
+    if (onThinking) {
+      await onThinking('thinking', '🔄 正在调用 LLM 分析意图...');
+    }
+    
+    // 使用流式调用 LLM
+    let fullResponse = '';
+    const streamOptions: StreamOptions = {
+      systemPrompt,
+      history,
+      maxTokens: 100,
+      onToken: (token) => {
+        fullResponse += token;
+      },
+    };
+    
+    for await (const token of llmService.stream(userPrompt, streamOptions)) {
+      // 每个 token 都实时推送（可以按需节流）
+      if (onThinking && fullResponse.length % 20 === 0) {
+        await onThinking('analysis', `💭 分析中: ${fullResponse.slice(-30)}...`);
+      }
+    }
+    
+    if (onThinking) {
+      await onThinking('analysis', '✅ 意图分析完成');
+    }
+    
+    return this.parseAnalysisResult(fullResponse, observation);
+  }
 
   private async performDeepAnalysis(observation: Observation): Promise<AnalysisResult> {
     const llmService = await this.getLLM();
