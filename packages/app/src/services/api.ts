@@ -205,10 +205,11 @@ export class ApiClient {
               eventCount++;
               
               // Log first few events and errors
-              if (eventCount <= 3 || event.type === 'error' || event.type === 'complete') {
-                logger.sse(event.type, { 
+              const eventType = event.type;
+              if (eventCount <= 3 || eventType === 'error' || eventType === 'result') {
+                logger.sse(eventType, { 
                   content: event.content?.substring(0, 100),
-                  sessionId: event.sessionId 
+                  sessionId: (event as any).sessionId 
                 });
               }
               

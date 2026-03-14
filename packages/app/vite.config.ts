@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 
-const apiPort = process.env.VITE_API_PORT || '3000';
-const wsPort = process.env.VITE_WS_PORT || '3000';
+const apiPort = '34567';
+const wsPort = '34567';
 
 export default defineConfig({
   plugins: [solid()],

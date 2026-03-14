@@ -1,7 +1,7 @@
 import { createSignal, createEffect, onMount, Show, For, onCleanup } from 'solid-js';
 import type { Message, Skill, ConfirmationRequest, ToolCall, SSEEvent, ModelInfo, Provider, AgentInstance, SessionListItem } from './types';
 import { apiClient } from './services/api';
-import { createWebSocketClient } from './services/websocket';
+import { createEventClient } from './services/event-client';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { ToastContainer, showToast } from './components/Toast';
 import { Typewriter, SmartTypewriter } from './components/Typewriter';
@@ -650,27 +650,63 @@ function App() {
   };
 
   let messagesContainer: HTMLDivElement | undefined;
-  let wsClient: ReturnType<typeof createWebSocketClient>;
+  let eventClient: ReturnType<typeof createEventClient>;
+  let unsubscribers: (() => void)[] = [];
 
   onMount(() => {
-    wsClient = createWebSocketClient({
-      url: '/ws',
-      reconnect: true,
-      heartbeatInterval: 25000,
-      onOpen: () => {
+    // 使用 EventClient 替换 WebSocket
+    eventClient = createEventClient({
+      reconnectInterval: 5000,
+      onConnect: () => {
         setConnectionStatus('connected');
       },
-      onClose: () => {
+      onDisconnect: () => {
         setConnectionStatus('disconnected');
       },
-      onMessage: (msg) => {
-        handleWebSocketMessage(msg);
+      onError: (error) => {
+        console.error('[EventClient] Error:', error);
       },
-      onError: () => {
-        console.error('[WebSocket] Connection error');
-      },
+      autoConnect: false, // 延迟连接
     });
-    wsClient.connect();
+
+    // 订阅事件
+    unsubscribers.push(
+      // 权限请求
+      eventClient.on('permission.asked', (event) => {
+        const payload = event.payload as unknown as ConfirmationRequest;
+        setConfirmationRequest(payload);
+      }),
+      
+      // 工具调用更新
+      eventClient.on('tool.updated', (event) => {
+        const toolUpdate = event.payload as ToolCall;
+        setCurrentToolCalls((prev) => {
+          const index = prev.findIndex((t) => t.id === toolUpdate.id);
+          if (index >= 0) {
+            const updated = [...prev];
+            updated[index] = toolUpdate;
+            return updated;
+          }
+          return [...prev, toolUpdate];
+        });
+      }),
+      
+      // 会话更新
+      eventClient.on('session.updated', (event) => {
+        const sessionData = event.payload as { messages?: Message[] };
+        if (sessionData.messages) {
+          setMessages(sessionData.messages);
+        }
+      }),
+      
+      // 错误事件
+      eventClient.on('system.error', (event) => {
+        showToast('error', String(event.payload));
+      })
+    );
+
+    // 连接事件流
+    eventClient.connect(sessionId() || undefined);
   });
 
   const handleWebSocketMessage = (msg: { type: string; payload: unknown }) => {
@@ -752,8 +788,10 @@ function App() {
       setMessages(result.data);
     }
     
-    if (wsClient?.isConnected()) {
-      wsClient.send({ type: 'subscribe', payload: newSessionId });
+    // EventClient: 切换会话只需要重新连接
+    if (eventClient?.isConnected()) {
+      eventClient.disconnect();
+      eventClient.connect(newSessionId);
     }
     
     showToast('success', '已切换会话');
@@ -1048,13 +1086,10 @@ function App() {
   const handleConfirmation = async (id: string, allowed: boolean) => {
     setConfirmationRequest(null);
     
-    if (wsClient?.isConnected()) {
-      wsClient.confirmPermission(id, allowed);
-    } else {
-      const result = await apiClient.confirmPermission(sessionId(), id, allowed);
-      if (!result.success) {
-        showToast('error', result.error || '确认失败');
-      }
+    // EventClient: 权限确认使用 API 调用
+    const result = await apiClient.confirmPermission(sessionId(), id, allowed);
+    if (!result.success) {
+      showToast('error', result.error || '确认失败');
     }
     
     showToast('info', allowed ? '已允许操作' : '已拒绝操作');

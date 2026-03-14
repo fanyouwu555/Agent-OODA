@@ -1,3 +1,4 @@
+export * from './event-bus';
 export * from './types';
 export * from './ooda/loop';
 export * from './ooda/observe';

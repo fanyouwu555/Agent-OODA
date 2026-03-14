@@ -2,6 +2,7 @@
 // OODA Loop 流式输出处理器
 
 import { OODAEvent, OODACallback } from './loop';
+import { getEventBus, BackendEvent } from '../event-bus';
 
 /**
  * 流式输出事件类型
@@ -52,10 +53,13 @@ export class StreamingOutputManager {
   private handler: StreamingHandler;
   private currentPhase: string | null = null;
   private buffer: string = '';
+  private sessionId?: string;
+  private eventBus = getEventBus();
 
-  constructor(handler: StreamingHandler, config: Partial<StreamingConfig> = {}) {
+  constructor(handler: StreamingHandler, config: Partial<StreamingConfig> = {}, sessionId?: string) {
     this.handler = handler;
     this.config = { ...defaultStreamingConfig, ...config };
+    this.sessionId = sessionId;
   }
 
   /**
@@ -154,10 +158,41 @@ export class StreamingOutputManager {
         timestamp: Date.now(),
       });
 
+      // 通过 EventBus 发布消息部分事件
+      if (this.sessionId) {
+        this.eventBus.publish({
+          id: `evt-${Date.now()}-${i}`,
+          namespace: 'message',
+          action: 'part',
+          sessionId: this.sessionId,
+          payload: {
+            part: chunk,
+            index: i,
+            totalLength: content.length,
+            isComplete: i === chunks.length - 1,
+          },
+          timestamp: Date.now(),
+        });
+      }
+
       // 添加延迟以模拟流式效果
       if (this.config.delayBetweenChunks > 0) {
         await this.sleep(this.config.delayBetweenChunks);
       }
+    }
+    
+    // 消息完成事件
+    if (this.sessionId) {
+      this.eventBus.publish({
+        id: `evt-${Date.now()}-complete`,
+        namespace: 'message',
+        action: 'completed',
+        sessionId: this.sessionId,
+        payload: {
+          fullContent: content,
+        },
+        timestamp: Date.now(),
+      });
     }
   }
 

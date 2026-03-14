@@ -112,7 +112,7 @@ export class OODALoop {
     
     // 初始化流式输出管理器
     if (streamingHandler) {
-      this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig);
+      this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
     }
   }
 
@@ -120,7 +120,7 @@ export class OODALoop {
    * 启用流式输出
    */
   enableStreaming(handler: StreamingHandler, config?: Partial<StreamingConfig>): void {
-    this.streamingManager = new StreamingOutputManager(handler, config);
+    this.streamingManager = new StreamingOutputManager(handler, config, this.sessionId);
   }
 
   /**

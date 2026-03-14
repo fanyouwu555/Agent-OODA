@@ -11,6 +11,7 @@ import { permissionRoutes } from './routes/permissions';
 import { agentRoutes } from './routes/agents';
 import { toolRoutes } from './routes/tools';
 import { loggingRoutes } from './routes/logging';
+import eventRoutes from './routes/events';
 import { cors } from 'hono/cors';
 import { apiRateLimit } from './middleware/rate-limit';
 import { requestLogger } from './middleware/logger';
@@ -148,6 +149,7 @@ async function main() {
   app.route('/api/permissions', permissionRoutes);
   app.route('/api/agents', agentRoutes);
   app.route('/api/tools', toolRoutes);
+  app.route('/api/events', eventRoutes);
   app.route('/api/logging', loggingRoutes);
   app.route('/api', sessionRoutes);
 
