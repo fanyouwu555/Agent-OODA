@@ -19,6 +19,14 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
+function getLocalDateString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 class Logger {
   private config: LoggerConfig;
   private currentLogFile: string | null = null;
@@ -27,10 +35,11 @@ class Logger {
   private isWriting: boolean = false;
 
   constructor() {
+    const logDirEnv = process.env.LOG_DIR;
     this.config = {
       level: (process.env.LOG_LEVEL as LogLevel) || 'info',
       enableFile: process.env.LOG_TO_FILE === 'true',
-      logDir: process.env.LOG_DIR || path.join(process.cwd(), 'logs'),
+      logDir: logDirEnv ? path.resolve(logDirEnv) : path.join(process.cwd(), 'logs'),
       maxFileSize: 10 * 1024 * 1024, // 10MB
       maxFiles: 5,
     };
@@ -74,9 +83,11 @@ class Logger {
   }
 
   private async getLogFile(): Promise<string> {
-    if (!this.currentLogFile) {
-      const date = new Date().toISOString().split('T')[0];
-      this.currentLogFile = path.join(this.config.logDir, `server-${date}.log`);
+    const date = getLocalDateString();
+    const expectedFile = path.join(this.config.logDir, `server-${date}.log`);
+    
+    if (!this.currentLogFile || this.currentLogFile !== expectedFile) {
+      this.currentLogFile = expectedFile;
       try {
         const stats = await fs.stat(this.currentLogFile);
         this.currentFileSize = stats.size;

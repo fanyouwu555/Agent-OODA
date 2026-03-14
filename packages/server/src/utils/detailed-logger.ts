@@ -34,24 +34,36 @@ const DEFAULT_CATEGORIES: LogCategory[] = [
   'OODA', 'SERVER', 'SSE', 'WEBSOCKET', 'HTTP', 'TOOL', 'SKILL', 'MEMORY', 'DB', 'PERMISSION', 'CONFIG', 'SYSTEM'
 ];
 
+function getLocalDateString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 class DetailedLogger {
   private state: LoggerState;
-  private logDir: string;
+  private _logDir: string | null = null;
   private currentLogFile: string | null = null;
   private logEntries: LogEntry[] = [];
   private maxMemoryEntries: number = 1000;
   private enableFile: boolean = true;
 
   constructor() {
-    // 默认启用所有日志
     this.state = {
       enabled: true,
-      level: (process.env.LOG_LEVEL as LogLevel) || 'debug',  // 默认改为 debug 以记录更多信息
+      level: (process.env.LOG_LEVEL as LogLevel) || 'debug',
       categories: this.initCategories(true),
     };
+  }
 
-    // 日志目录为项目根目录
-    this.logDir = process.env.LOG_DIR || path.dirname(path.dirname(process.cwd()));
+  private get logDir(): string {
+    if (!this._logDir) {
+      const logDirEnv = process.env.LOG_DIR;
+      this._logDir = logDirEnv ? path.resolve(logDirEnv) : path.join(process.cwd(), 'logs');
+    }
+    return this._logDir;
   }
 
   private initCategories(enabled: boolean): Record<LogCategory, boolean> {
@@ -197,9 +209,11 @@ class DetailedLogger {
     // 控制台输出
     this.logToConsole(entry);
 
-    // 文件输出
+    // 文件输出 (异步，不等待)
     if (this.enableFile) {
-      this.logToFile(entry);
+      this.logToFile(entry).catch(err => {
+        console.error('[DetailedLogger] Failed to write log:', err);
+      });
     }
   }
 
@@ -261,9 +275,11 @@ class DetailedLogger {
   }
 
   private async getLogFile(): Promise<string> {
-    if (!this.currentLogFile) {
-      const date = new Date().toISOString().split('T')[0];
-      this.currentLogFile = path.join(this.logDir, `ooda-detailed-${date}.log`);
+    const date = getLocalDateString();
+    const expectedFile = path.join(this.logDir, `ooda-detailed-${date}.log`);
+    
+    if (!this.currentLogFile || this.currentLogFile !== expectedFile) {
+      this.currentLogFile = expectedFile;
     }
     return this.currentLogFile;
   }
