@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 
-const apiPort = '34567';
-const wsPort = '34567';
+const apiPort = '34568';
+const wsPort = '34568';
 
 export default defineConfig({
   plugins: [solid()],
@@ -12,7 +12,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 5174,
     strictPort: false,
     host: '0.0.0.0',
     proxy: {

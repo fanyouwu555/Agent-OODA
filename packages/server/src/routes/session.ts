@@ -289,6 +289,19 @@ sessionRoutes
         });
         
         const oodaLoop = new OODALoop(sessionId);
+        
+        // 启用流式输出
+        oodaLoop.enableStreaming({
+          onEvent: async (event) => {
+            if (event.type === 'content' && event.content) {
+              await sendEvent('message.part', { 
+                part: event.content, 
+                isComplete: event.progress === 100 
+              });
+            }
+          }
+        }, { chunkSize: 100, delayBetweenChunks: 0 });
+        
         console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);
         
         // 用于流式输出的累积内容

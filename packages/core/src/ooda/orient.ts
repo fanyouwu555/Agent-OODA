@@ -121,7 +121,7 @@ export class Orienter {
     const response = await llmService.generate(userPrompt, {
       systemPrompt,
       history,
-      maxTokens: 2000,
+      maxTokens: 100,  // 本地模型限制，意图分析不需要太长
     });
     
     return this.parseAnalysisResult(response.text, observation);
@@ -193,7 +193,7 @@ ${conversationText}
 
     try {
       const response = await llmService.generate(prompt, {
-        maxTokens: 500,
+        maxTokens: 200,  // 本地模型限制
       });
       return response.text || existingSummary || '';
     } catch (error) {

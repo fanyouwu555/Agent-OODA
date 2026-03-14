@@ -41,8 +41,8 @@ export const defaultStreamingConfig: StreamingConfig = {
   enabled: true,
   showThinking: true,
   showProgress: true,
-  chunkSize: 10,
-  delayBetweenChunks: 50,
+  chunkSize: 100,
+  delayBetweenChunks: 0,
 };
 
 /**

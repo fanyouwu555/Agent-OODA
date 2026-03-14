@@ -42,6 +42,54 @@ async function findAvailablePort(startPort: number, maxAttempts: number = 10): P
   return startPort + maxAttempts;
 }
 
+/**
+ * 预热 Ollama 模型，避免首次请求时模型加载延迟
+ */
+async function warmupOllama() {
+  const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+  const MODEL = process.env.OLLAMA_MODEL || 'qwen3:4b';
+  
+  try {
+    // 先检查 Ollama 是否可用
+    const healthCheck = await fetch(`${OLLAMA_URL}/api/tags`, { 
+      method: 'GET',
+      signal: AbortSignal.timeout(5000)
+    });
+    
+    if (!healthCheck.ok) {
+      console.log('[Warmup] Ollama not available, skipping warmup');
+      return;
+    }
+    
+    console.log(`[Warmup] Preloading model: ${MODEL}...`);
+    
+    // 发送一个简单的请求预热模型
+    const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: false,
+        options: {
+          num_predict: 1,  // 最少生成 token
+        }
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      const loadDuration = data.load_duration ? Math.round(data.load_duration / 1000000) : 0;
+      console.log(`[Warmup] Model loaded in ${loadDuration}ms, ready for requests`);
+    } else {
+      console.log(`[Warmup] Warmup request failed: ${response.status}`);
+    }
+  } catch (error) {
+    console.log(`[Warmup] Skipped: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+}
+
 async function loadConfig() {
   const configPaths = [
     path.join(process.cwd(), 'config', 'local-model.json'),
@@ -348,6 +396,9 @@ async function main() {
     if (logger.getLogFilePath()) {
       logger.info('Server', `Log file: ${logger.getLogFilePath()}`);
     }
+    
+    // 预热 Ollama 模型（避免首次请求慢）
+    warmupOllama().catch(err => logger.warn('Server', `Ollama warmup failed: ${err.message}`));
   });
 }
 

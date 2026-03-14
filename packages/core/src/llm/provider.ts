@@ -38,6 +38,7 @@ export interface GenerateResult {
   text: string;
   tokens: number;
   time: number;
+  error?: string;
 }
 
 export class LocalModelProvider implements LLMProvider {

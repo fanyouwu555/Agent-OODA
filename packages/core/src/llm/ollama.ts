@@ -2,7 +2,7 @@ import { LLMProvider, GenerateOptions, StreamOptions, GenerateResult, ChatMessag
 
 const MAX_RETRIES = 3;
 const BASE_DELAY = 2000;
-const DEFAULT_TIMEOUT = 120000;
+const DEFAULT_TIMEOUT = 60000;  // 60秒，正常请求足够
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -77,12 +77,8 @@ export class OllamaProvider implements LLMProvider {
   }
   
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult> {
+    // 统一使用 chat 端点，避免 generate 端点的兼容性问题
     const messages = this.buildMessages(prompt, options);
-    
-    if (messages.length <= 2 && !options?.history?.length) {
-      return this.generateSimple(prompt, options);
-    }
-    
     return this.chat(messages, options);
   }
   
@@ -146,7 +142,7 @@ export class OllamaProvider implements LLMProvider {
         };
       } catch (error: any) {
         if (error.name === 'AbortError') {
-          throw new Error(`Ollama request timed out after ${timeout}ms`);
+          console.log(`[Ollama] Timeout on attempt ${attempt}/${MAX_RETRIES}, ${timeout}ms exceeded`);
         }
         
         if (attempt === MAX_RETRIES) {
@@ -226,7 +222,7 @@ export class OllamaProvider implements LLMProvider {
         };
       } catch (error: any) {
         if (error.name === 'AbortError') {
-          throw new Error(`Ollama request timed out after ${timeout}ms`);
+          console.log(`[Ollama] Timeout on attempt ${attempt}/${MAX_RETRIES}, ${timeout}ms exceeded`);
         }
         
         if (attempt === MAX_RETRIES) {

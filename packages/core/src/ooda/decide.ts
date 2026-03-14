@@ -52,7 +52,7 @@ export class Decider {
   private async performDecisionAnalysis(orientation: Orientation): Promise<DecisionAnalysis> {
     const llmService = await this.getLLM();
     const prompt = this.buildDecisionPrompt(orientation);
-    const response = await llmService.generate(prompt, { maxTokens: 3000 });
+    const response = await llmService.generate(prompt, { maxTokens: 200 });  // 本地模型限制
     
     return this.parseDecisionResponse(response.text, orientation);
   }

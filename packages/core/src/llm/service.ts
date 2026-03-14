@@ -22,11 +22,11 @@ export class LLMService {
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult> {
     return this.provider.generate(prompt, options);
   }
-  
+
   async chat(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult> {
     return this.provider.chat(messages, options);
   }
-  
+
   async *stream(prompt: string, options?: GenerateOptions): AsyncGenerator<string> {
     for await (const token of this.provider.stream(prompt, options)) {
       yield token;

@@ -97,14 +97,14 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
       npm: '@ai-sdk/openai-compatible',
       name: 'ollama',
       options: {
-        baseURL: 'http://localhost:11434/v1',
+        baseURL: 'http://localhost:11434',
         apiKey: 'token-unused'
       },
       models: {
-        'qwen3:8b': {
-          name: 'qwen3:8b',
+        'qwen3:4b': {  // 改用更小的模型
+          name: 'qwen3:4b',
           temperature: 0.7,
-          maxTokens: 2000
+          maxTokens: 1024  // 减少 maxTokens
         }
       }
     }
