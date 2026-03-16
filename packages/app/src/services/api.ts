@@ -187,6 +187,7 @@ export class ApiClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let eventCount = 0;
+    let currentEventType = ''; // 跟踪当前事件类型
 
     while (true) {
       const { value, done } = await reader.read();
@@ -197,15 +198,26 @@ export class ApiClient {
       buffer = lines.pop() || '';
 
       for (const line of lines) {
+        // 提取事件类型 (SSE event: 行)
+        if (line.startsWith('event:')) {
+          currentEventType = line.substring(6).trim();
+          continue;
+        }
+        
         if (line.startsWith('data:')) {
           const data = line.substring(5).trim();
           if (data) {
             try {
-              const event: SSEEvent = JSON.parse(data);
+              const parsedData = JSON.parse(data);
+              // 优先使用 event: 行的类型，否则使用 data 里的 type
+              const eventType = currentEventType || parsedData.type || 'message';
+              const event: SSEEvent = { 
+                ...parsedData, 
+                type: eventType 
+              };
               eventCount++;
               
               // Log first few events and errors
-              const eventType = event.type;
               if (eventCount <= 3 || eventType === 'error' || eventType === 'result') {
                 logger.sse(eventType, { 
                   content: event.content?.substring(0, 100),
@@ -214,6 +226,9 @@ export class ApiClient {
               }
               
               onEvent(event);
+              
+              // 重置事件类型
+              currentEventType = '';
             } catch (e) {
               console.warn('Failed to parse SSE event:', data);
             }

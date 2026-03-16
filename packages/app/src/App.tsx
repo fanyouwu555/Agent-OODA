@@ -534,6 +534,9 @@ function App() {
     { name: 'OpenAI', type: 'api', models: [{ name: 'gpt-4', temperature: 0.7, maxTokens: 8000 }, { name: 'gpt-3.5-turbo', temperature: 0.7, maxTokens: 4000 }] },
     { name: 'Anthropic', type: 'api', models: [{ name: 'claude-3-opus', temperature: 0.7, maxTokens: 200000 }, { name: 'claude-3-sonnet', temperature: 0.7, maxTokens: 200000 }] },
   ]);
+  
+  // 思考过程流式条目列表
+  const [thinkingSteps, setThinkingSteps] = createSignal<Array<{type: string; content: string; timestamp: number}>>([]);
   const [currentThinking, setCurrentThinking] = createSignal<string>('');
   const [currentIntent, setCurrentIntent] = createSignal<string>('');
   const [currentReasoning, setCurrentReasoning] = createSignal<string>('');
@@ -946,6 +949,7 @@ function App() {
     setMessage('');
     setIsLoading(true);
     setCurrentToolCalls([]);
+    setThinkingSteps([]);  // 重置思考步骤
     setCurrentThinking('');
     setCurrentIntent('');
     setCurrentReasoning('');
@@ -987,18 +991,21 @@ function App() {
       case 'thinking':
         setOodaStep('Orient: 理解意图...');
         if (event.content) {
-          setCurrentThinking(event.content);
+          // 作为独立条目添加
+          setThinkingSteps(prev => [...prev, { type: 'thinking', content: event.content!, timestamp: Date.now() }]);
         }
         break;
       case 'intent':
         if (event.content) {
-          setCurrentIntent(event.content);
+          // 作为独立条目添加
+          setThinkingSteps(prev => [...prev, { type: 'intent', content: event.content!, timestamp: Date.now() }]);
           setOodaStep('Decide: 制定决策...');
         }
         break;
       case 'reasoning':
         if (event.content) {
-          setCurrentReasoning(event.content);
+          // 作为独立条目添加
+          setThinkingSteps(prev => [...prev, { type: 'reasoning', content: event.content!, timestamp: Date.now() }]);
           setOodaStep('Act: 执行行动...');
         }
         break;
@@ -1032,19 +1039,26 @@ function App() {
         setOodaStep('完成');
         // 优先使用流式内容，否则使用 event.content
         const finalContent = streamingContent() || event.content || '';
-        if (finalContent) {
+        // 将思考步骤转换为 thinking/intent/reasoning
+        const steps = thinkingSteps();
+        const thinkingContent = steps.filter(s => s.type === 'thinking').map(s => s.content).join('\n');
+        const intentContent = steps.filter(s => s.type === 'intent').map(s => s.content).join('\n');
+        const reasoningContent = steps.filter(s => s.type === 'reasoning').map(s => s.content).join('\n');
+        
+        if (finalContent || steps.length > 0) {
           const assistantMessage: Message = {
             id: Date.now().toString(),
             role: 'assistant',
             content: finalContent,
             timestamp: Date.now(),
             toolCalls: currentToolCalls(),
-            thinking: currentThinking(),
-            intent: currentIntent(),
-            reasoning: currentReasoning(),
+            thinking: thinkingContent || currentThinking(),
+            intent: intentContent || currentIntent(),
+            reasoning: reasoningContent || currentReasoning(),
           };
           setMessages((prev) => [...prev, assistantMessage]);
           setCurrentToolCalls([]);
+          setThinkingSteps([]);  // 重置思考步骤
           setCurrentThinking('');
           setCurrentIntent('');
           setCurrentReasoning('');
@@ -1301,12 +1315,53 @@ function App() {
                     <span class="message-author">OODA Agent</span>
                     <span class="message-time">{formatTime(Date.now())}</span>
                   </div>
-                  <Show when={currentThinking() || currentIntent() || currentReasoning()}>
+                  <Show when={thinkingSteps().length > 0 || currentThinking() || currentIntent() || currentReasoning()}>
                     <div class="message-ooda-process streaming">
                       <div class="ooda-header">
                         <span class="ooda-title">🔍 OODA 分析过程</span>
                         <span class="ooda-status">进行中...</span>
                       </div>
+                      {/* 流式显示思考步骤 */}
+                      <For each={thinkingSteps()}>
+                        {(step) => (
+                          <Show when={step.type === 'thinking'}>
+                            <div class="ooda-item thinking">
+                              <span class="ooda-icon">💭</span>
+                              <div class="ooda-content">
+                                <span class="ooda-label">思考</span>
+                                <span class="ooda-text">{step.content}</span>
+                              </div>
+                            </div>
+                          </Show>
+                        )}
+                      </For>
+                      <For each={thinkingSteps()}>
+                        {(step) => (
+                          <Show when={step.type === 'intent'}>
+                            <div class="ooda-item intent">
+                              <span class="ooda-icon">🎯</span>
+                              <div class="ooda-content">
+                                <span class="ooda-label">意图</span>
+                                <span class="ooda-text">{step.content}</span>
+                              </div>
+                            </div>
+                          </Show>
+                        )}
+                      </For>
+                      <For each={thinkingSteps()}>
+                        {(step) => (
+                          <Show when={step.type === 'reasoning'}>
+                            <div class="ooda-item reasoning">
+                              <span class="ooda-icon">💡</span>
+                              <div class="ooda-content">
+                                <span class="ooda-label">推理</span>
+                                <span class="ooda-text">{step.content}</span>
+                              </div>
+                            </div>
+                          </Show>
+                        )}
+                      </For>
+                      {/* 备用显示（兼容旧数据） */}
                       <Show when={currentThinking()}>
                         <div class="ooda-item thinking">
                           <span class="ooda-icon">💭</span>
