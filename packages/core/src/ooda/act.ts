@@ -232,6 +232,29 @@ export class Actor {
     };
   }
 
+  async *streamGenerateResponse(
+    action: Action, 
+    onChunk?: (chunk: string) => void
+  ): AsyncGenerator<string> {
+    if (action.type !== 'response') {
+      throw new Error('Invalid action type for streamGenerateResponse');
+    }
+    
+    const content = action.content || '';
+    
+    if (onChunk) {
+      onChunk(content);
+    }
+    
+    await this.mcp.publishEvent('agent.response_stream', {
+      content: content,
+      timestamp: Date.now(),
+      isComplete: true,
+    });
+    
+    yield content;
+  }
+
   private async requestClarification(action: Action): Promise<unknown> {
     if (action.type !== 'clarification') {
       throw new Error('Invalid action type for requestClarification');
@@ -291,36 +314,27 @@ export class Actor {
       feedback.suggestions.push(...errorFeedback.suggestions);
       feedback.issues.push(...errorFeedback.issues);
     } else {
-      feedback.observations.push('操作成功完成');
-      
-      if (action.type === 'tool_call') {
-        feedback.newInformation.push(`工具 ${action.toolName} 执行成功`);
-        
-        const resultData = result as any;
-        if (resultData.result) {
-          const resultStr = typeof resultData.result === 'string' 
-            ? resultData.result 
-            : JSON.stringify(resultData.result).slice(0, 200);
-          feedback.newInformation.push(`结果摘要: ${resultStr}...`);
+      if (action.type === 'response') {
+        const responseContent = (result as any)?.content || action.content || '';
+        if (responseContent) {
+          feedback.observations.push(responseContent);
         }
-        
-        // 启发式反馈：基于工具类型提供额外信息
-        const heuristicFeedback = this.generateHeuristicSuccessFeedback(action, result);
-        feedback.observations.push(...heuristicFeedback.observations);
-        feedback.newInformation.push(...heuristicFeedback.newInformation);
-      }
-      
-      const remainingSteps = decision.plan.subtasks.filter(t => t.status === 'pending').length;
-      if (remainingSteps > 1) {
-        feedback.observations.push(`还有 ${remainingSteps - 1} 个步骤待执行`);
-      } else if (remainingSteps === 0) {
-        feedback.observations.push('所有计划步骤已完成');
-      }
-      
-      // 启发式反馈：任务进度评估
-      const progressFeedback = this.generateProgressFeedback(decision);
-      if (progressFeedback) {
-        feedback.observations.push(progressFeedback);
+      } else {
+        if (action.type === 'tool_call') {
+          feedback.newInformation.push(`工具 ${action.toolName} 执行成功`);
+          
+          const resultData = result as any;
+          if (resultData.result) {
+            const resultStr = typeof resultData.result === 'string' 
+              ? resultData.result 
+              : JSON.stringify(resultData.result).slice(0, 200);
+            feedback.newInformation.push(`结果摘要: ${resultStr}...`);
+          }
+          
+          const heuristicFeedback = this.generateHeuristicSuccessFeedback(action, result);
+          feedback.observations.push(...heuristicFeedback.observations);
+          feedback.newInformation.push(...heuristicFeedback.newInformation);
+        }
       }
     }
     
@@ -459,31 +473,7 @@ export class Actor {
    * 启发式进度反馈 - 评估任务整体进度
    */
   private generateProgressFeedback(decision: Decision): string | null {
-    const totalTasks = decision.plan.subtasks.length;
-    const completedTasks = decision.plan.subtasks.filter(t => t.status === 'completed').length;
-    const failedTasks = decision.plan.subtasks.filter(t => t.status === 'failed').length;
-    
-    if (totalTasks === 0) return null;
-    
-    const progressPercent = Math.round((completedTasks / totalTasks) * 100);
-    
-    if (failedTasks > 0) {
-      return `任务进度: ${progressPercent}% (${completedTasks}/${totalTasks} 完成, ${failedTasks} 失败)`;
-    }
-    
-    if (progressPercent === 100) {
-      return '所有任务已完成';
-    }
-    
-    if (progressPercent >= 75) {
-      return `任务即将完成: ${progressPercent}%`;
-    }
-    
-    if (progressPercent >= 50) {
-      return `任务进度过半: ${progressPercent}%`;
-    }
-    
-    return `任务进行中: ${progressPercent}%`;
+    return null;
   }
 
   private isErrorResult(result: unknown): boolean {

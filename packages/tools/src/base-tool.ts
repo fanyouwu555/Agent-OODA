@@ -15,6 +15,11 @@ const ALLOWED_COMMANDS = [
   'curl', 'wget',
 ];
 
+const WINDOWS_BUILTIN_COMMANDS = [
+  'echo', 'cd', 'dir', 'type', 'copy', 'move', 'del', 'md', 'rd',
+  'cls', 'set', 'call', 'if', 'for', 'not', 'exist', 'defined',
+];
+
 const DANGEROUS_PATTERNS = [
   /\brm\s+-rf\s+\//i,
   /\brm\s+-rf\s+\*/i,
@@ -48,7 +53,7 @@ function parseCommand(input: string): { command: string; args: string[] } | null
   return { command, args: parts.slice(1) };
 }
 
-function validateCommand(input: string): { command: string; args: string[] } {
+function validateCommand(input: string): { command: string; args: string[]; useShell: boolean } {
   for (const pattern of DANGEROUS_PATTERNS) {
     if (pattern.test(input)) {
       throw new Error(`检测到危险命令模式，禁止执行`);
@@ -60,12 +65,22 @@ function validateCommand(input: string): { command: string; args: string[] } {
     throw new Error(`无法解析命令: ${input}`);
   }
   
-  const baseCommand = parsed.command;
-  if (!ALLOWED_COMMANDS.includes(baseCommand)) {
-    throw new Error(`命令不允许: ${baseCommand}。允许的命令: ${ALLOWED_COMMANDS.slice(0, 10).join(', ')}...`);
+  const baseCommand = parsed.command.toLowerCase();
+  
+  const isWindowsBuiltIn = WINDOWS_BUILTIN_COMMANDS.includes(baseCommand);
+  const isUnixCommand = ALLOWED_COMMANDS.includes(baseCommand);
+  
+  if (!isWindowsBuiltIn && !isUnixCommand) {
+    throw new Error(`命令不允许: ${parsed.command}。允许的命令: ${ALLOWED_COMMANDS.slice(0, 10).join(', ')}...`);
   }
   
-  return parsed;
+  const isWindows = process.platform === 'win32';
+  
+  return {
+    command: parsed.command,
+    args: parsed.args,
+    useShell: isWindows && isWindowsBuiltIn
+  };
 }
 
 export const readFileTool: Tool<{ path: string; offset?: number; limit?: number; encoding?: string }, { content: string; lines: string[]; totalLines: number; path: string }> = {
@@ -268,7 +283,7 @@ export const runBashTool: Tool<{ command: string; timeout?: number; cwd?: string
   ],
   
   async execute(input, context) {
-    const { command, args } = validateCommand(input.command);
+    const { command, args, useShell } = validateCommand(input.command);
     
     const cwd = input.cwd 
       ? path.resolve(context.workingDirectory, input.cwd)
@@ -281,11 +296,32 @@ export const runBashTool: Tool<{ command: string; timeout?: number; cwd?: string
     const timeout = input.timeout || context.maxExecutionTime || 30000;
     const startTime = Date.now();
     
+    const isWindows = process.platform === 'win32';
+    
+    let cmd: string;
+    let cmdArgs: string[];
+    let shellOption: boolean;
+    
+    if (isWindows && useShell) {
+      cmd = 'cmd.exe';
+      cmdArgs = ['/c', command, ...args];
+      shellOption = false;
+    } else if (useShell) {
+      cmd = '/bin/sh';
+      cmdArgs = ['-c', command, ...args];
+      shellOption = false;
+    } else {
+      cmd = command;
+      cmdArgs = args;
+      shellOption = false;
+    }
+    
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, args, {
+      const proc = spawn(cmd, cmdArgs, {
         cwd,
-        shell: false,
+        shell: shellOption,
         timeout,
+        windowsHide: true,
       });
       
       let stdout = '';

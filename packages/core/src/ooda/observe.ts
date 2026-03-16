@@ -1,6 +1,9 @@
 // packages/core/src/ooda/observe.ts
 import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, Anomaly, Pattern } from '../types';
 import { getSessionMemory, SessionMemory } from '../memory';
+import { BaseOODAAgent, AgentDependencies } from './agent/base';
+import { OODAAgentConfig, AgentInput, AgentOutput, ObserveResult } from './types';
+import { LLMService } from '../llm/service';
 
 interface ToolResultData {
   toolName?: string;
@@ -584,5 +587,176 @@ export class Observer {
       cpu: 0.3,
       network: 0.1,
     };
+  }
+}
+
+/**
+ * ========== 新增: Observe Agent (四代理架构) ==========
+ * 继承 BaseOODAAgent，具备 LLM 调用能力
+ */
+export class ObserveAgent extends BaseOODAAgent {
+  private conversationSummary: string = '';
+
+  constructor(
+    config: OODAAgentConfig,
+    sessionId: string,
+    dependencies: AgentDependencies
+  ) {
+    super(config, sessionId, dependencies);
+  }
+
+  async execute(input: AgentInput): Promise<AgentOutput<ObserveResult>> {
+    const systemPrompt = this.buildSystemPrompt();
+    const userPrompt = this.buildUserPrompt(input);
+
+    const llmResult = await this.callLLM(systemPrompt, userPrompt);
+
+    const parsedResult = this.parseLLMResult(llmResult.text);
+
+    const anomalies = this.detectAnomaliesFromHistory(input);
+    const patterns = this.recognizePatternsFromHistory(input);
+
+    const result: ObserveResult = {
+      environment: parsedResult.environment,
+      anomalies: [...anomalies, ...parsedResult.anomalies],
+      patterns: [...patterns, ...parsedResult.patterns],
+    };
+
+    const summary = this.buildSummary(result);
+
+    return {
+      success: true,
+      data: result,
+      summary,
+      context: {
+        highSeverityAnomalies: result.anomalies.filter(a => a.severity === 'high'),
+        significantPatterns: result.patterns.filter(p => p.significance > 0.7),
+      },
+    };
+  }
+
+  private parseLLMResult(text: string): {
+    environment: string;
+    anomalies: ObserveResult['anomalies'];
+    patterns: ObserveResult['patterns'];
+  } {
+    try {
+      const parsed = JSON.parse(text);
+      return {
+        environment: parsed.environment || '',
+        anomalies: (parsed.anomalies || []).map((a: any) => ({
+          type: a.type || 'unknown',
+          description: a.description || '',
+          severity: a.severity || 'low',
+        })),
+        patterns: (parsed.patterns || []).map((p: any) => ({
+          type: p.type || 'unknown',
+          description: p.description || '',
+          significance: p.significance || 0.5,
+        })),
+      };
+    } catch {
+      return {
+        environment: text.slice(0, 500),
+        anomalies: [],
+        patterns: [],
+      };
+    }
+  }
+
+  private detectAnomaliesFromHistory(input: AgentInput): ObserveResult['anomalies'] {
+    const anomalies: ObserveResult['anomalies'] = [];
+    const config = this.config.anomalyDetection;
+
+    if (!config?.enabled) return anomalies;
+
+    const history = input.fullHistory || this.sessionMemory.getShortTerm().getRecentMessages(20);
+    const toolMessages = history.filter(m => m.role === 'assistant' && m.parts?.length);
+
+    if (toolMessages.length === 0) return anomalies;
+
+    let errorCount = 0;
+    for (const msg of history) {
+      if (msg.parts?.some(p => p.type === 'tool_result' && (p as any).isError)) {
+        errorCount++;
+      }
+    }
+    const errorRate = errorCount / Math.max(history.length, 1);
+
+    if (errorRate > (config.errorThreshold || 0.3)) {
+      anomalies.push({
+        type: 'error',
+        description: `错误率过高: ${(errorRate * 100).toFixed(1)}%`,
+        severity: 'high',
+      });
+    }
+
+    let consecutiveFailures = 0;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].parts?.some(p => p.type === 'tool_result' && (p as any).isError)) {
+        consecutiveFailures++;
+      } else {
+        break;
+      }
+    }
+
+    if (consecutiveFailures >= (config.consecutiveFailureLimit || 3)) {
+      anomalies.push({
+        type: 'consecutive_failures',
+        description: `连续失败 ${consecutiveFailures} 次`,
+        severity: 'high',
+      });
+    }
+
+    return anomalies;
+  }
+
+  private recognizePatternsFromHistory(input: AgentInput): ObserveResult['patterns'] {
+    const patterns: ObserveResult['patterns'] = [];
+    const config = this.config.patternRecognition;
+
+    if (!config?.enabled) return patterns;
+
+    const history = input.fullHistory || this.sessionMemory.getShortTerm().getRecentMessages(50);
+    const toolMessages = history.filter(m => m.role === 'assistant' && m.parts?.length);
+
+    if (toolMessages.length < 3) return patterns;
+
+    const toolCounts: Record<string, number> = {};
+    for (const msg of toolMessages) {
+      for (const part of msg.parts || []) {
+        if (part.type === 'tool_call') {
+          toolCounts[part.toolName] = (toolCounts[part.toolName] || 0) + 1;
+        }
+      }
+    }
+
+    const totalTools = Object.values(toolCounts).reduce((a, b) => a + b, 0);
+    const threshold = config.toolFrequencyThreshold || 0.6;
+
+    for (const [toolName, count] of Object.entries(toolCounts)) {
+      const frequency = count / totalTools;
+      if (frequency >= threshold) {
+        patterns.push({
+          type: 'tool_frequency',
+          description: `工具 ${toolName} 使用频繁 (${(frequency * 100).toFixed(1)}%)`,
+          significance: frequency,
+        });
+      }
+    }
+
+    return patterns;
+  }
+
+  private buildSummary(result: ObserveResult): string {
+    const parts: string[] = [];
+    parts.push(`环境: ${result.environment.slice(0, 200)}`);
+    if (result.anomalies.length > 0) {
+      parts.push(`异常: ${result.anomalies.map(a => a.description).join('; ')}`);
+    }
+    if (result.patterns.length > 0) {
+      parts.push(`模式: ${result.patterns.map(p => p.description).join('; ')}`);
+    }
+    return parts.join(' | ');
   }
 }

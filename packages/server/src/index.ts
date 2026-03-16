@@ -5,7 +5,7 @@ config({ path: resolve(process.cwd(), '.env') });
 config({ path: resolve(process.cwd(), '..', '..', '.env') });
 
 import { Hono } from 'hono';
-import { sessionRoutes, handleWebSocketMessage, cleanupWebSocket, setupHeartbeat } from './routes/session';
+import { sessionRoutes } from './routes/session';
 import { authRoutes } from './routes/auth';
 import { permissionRoutes } from './routes/permissions';
 import { agentRoutes } from './routes/agents';
@@ -22,7 +22,6 @@ import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigMana
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
 import { createStorage } from '@ooda-agent/storage';
 import { createServer } from 'node:http';
-import { WebSocketServer, WebSocket } from 'ws';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createConnection } from 'node:net';
@@ -315,68 +314,6 @@ async function main() {
     }
   });
 
-  const wss = new WebSocketServer({ noServer: true });
-
-  wss.on('connection', (ws: WebSocket, request) => {
-    const clientIp = request.socket.remoteAddress;
-    const clientId = `ws-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    logger.logWebSocket('connect', { clientIp });
-    detailedLogger.logWSConnect(clientId, clientIp);
-    
-    setupHeartbeat(ws);
-    
-    ws.on('message', (data: Buffer) => {
-      const message = data.toString();
-      let parsedMessage: unknown;
-      try {
-        parsedMessage = JSON.parse(message);
-      } catch {
-        parsedMessage = message.substring(0, 200);
-      }
-      logger.logWebSocket('message', { 
-        clientIp,
-        message: parsedMessage 
-      });
-      detailedLogger.logWSMessage(clientId, 'incoming', parsedMessage);
-      handleWebSocketMessage(ws as any, message);
-    });
-    
-    ws.on('close', (code, reason) => {
-      logger.logWebSocket('disconnect', { 
-        clientIp, 
-        code, 
-        reason: reason.toString() 
-      });
-      detailedLogger.logWSDisconnect(clientId, code, reason.toString());
-      cleanupWebSocket(ws as any);
-    });
-    
-    ws.on('error', (error) => {
-      logger.logWebSocket('error', { clientIp, error: error.message });
-      detailedLogger.logWSError(clientId, error.message, { stack: error.stack });
-      cleanupWebSocket(ws as any);
-    });
-    
-    ws.on('pong', () => {
-      setupHeartbeat(ws as any);
-    });
-    
-    ws.send(JSON.stringify({ type: 'connected', payload: { timestamp: Date.now() } }));
-    detailedLogger.logWSMessage(clientId, 'outgoing', { type: 'connected', payload: { timestamp: Date.now() } });
-  });
-
-  server.on('upgrade', (request, socket, head) => {
-    const pathname = request.url?.split('?')[0];
-    
-    if (pathname === '/ws') {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
-    } else {
-      socket.destroy();
-    }
-  });
-
   server.on('error', (error) => {
     logger.error('Server', 'Server error', { error: error.message });
   });
@@ -388,10 +325,8 @@ async function main() {
       logger.warn('Server', `You may need to update vite.config.ts proxy target to http://localhost:${PORT}`);
     }
     logger.info('Server', 'MCP service started');
-    logger.info('Server', 'WebSocket server enabled');
     logger.info('Server', `Health check: http://localhost:${PORT}/health`);
     logger.info('Server', `Skills list: http://localhost:${PORT}/api/skills`);
-    logger.info('Server', `WebSocket: ws://localhost:${PORT}/ws`);
     
     if (logger.getLogFilePath()) {
       logger.info('Server', `Log file: ${logger.getLogFilePath()}`);

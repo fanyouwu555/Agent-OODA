@@ -44,6 +44,7 @@ vi.mock('../../packages/core/src/memory', () => ({
       storeMessage: vi.fn()
     })),
     getLongTerm: vi.fn(() => ({
+      size: vi.fn().mockReturnValue(0),
       search: vi.fn().mockResolvedValue([])
     })),
     storeFact: vi.fn().mockResolvedValue('fact-1'),
@@ -459,8 +460,7 @@ describe('OODA 循环核心测试', () => {
 
     it('应该能够管理会话上下文', () => {
       const loop = new OODALoop('test-session');
-      loop.clearSessionContext();
-      // 应该清理成功，不报错
+      loop.clearCache();
       expect(true).toBe(true);
     });
   });

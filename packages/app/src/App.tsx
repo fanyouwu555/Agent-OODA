@@ -714,35 +714,6 @@ function App() {
     }
   });
 
-  const handleWebSocketMessage = (msg: { type: string; payload: unknown }) => {
-    switch (msg.type) {
-      case 'confirmation':
-        setConfirmationRequest(msg.payload as ConfirmationRequest);
-        break;
-      case 'tool_update':
-        const toolUpdate = msg.payload as ToolCall;
-        setCurrentToolCalls((prev) => {
-          const index = prev.findIndex((t) => t.id === toolUpdate.id);
-          if (index >= 0) {
-            const updated = [...prev];
-            updated[index] = toolUpdate;
-            return updated;
-          }
-          return [...prev, toolUpdate];
-        });
-        break;
-      case 'session_update':
-        const sessionData = msg.payload as { messages?: Message[] };
-        if (sessionData.messages) {
-          setMessages(sessionData.messages);
-        }
-        break;
-      case 'error':
-        showToast('error', String(msg.payload));
-        break;
-    }
-  };
-
   let sessionInitialized = false;
   
   const initializeSession = async () => {
@@ -945,6 +916,18 @@ function App() {
 
   createEffect(() => {
     messages();
+    scrollToBottom();
+  });
+
+  createEffect(() => {
+    streamingContent();
+    scrollToBottom();
+  });
+
+  createEffect(() => {
+    currentThinking();
+    currentIntent();
+    currentReasoning();
     scrollToBottom();
   });
 
@@ -1223,73 +1206,6 @@ function App() {
 
       {/* 主内容区 */}
       <main class="main-content new-main">
-        {/* 流式内容显示区域 - 包含 OODA 过程内联展示 */}
-        <Show when={isStreaming() || isLoading()}>
-          <div class="streaming-content">
-            {/* OODA 过程实时展示 */}
-            <Show when={currentThinking() || currentIntent() || currentReasoning()}>
-              <div class="ooda-streaming">
-                <Show when={currentThinking()}>
-                  <div class="ooda-item thinking">
-                    <span class="ooda-icon">💭</span>
-                    <span class="ooda-label">思考</span>
-                    <span class="ooda-text">{currentThinking()}</span>
-                  </div>
-                </Show>
-                <Show when={currentIntent()}>
-                  <div class="ooda-item intent">
-                    <span class="ooda-icon">🎯</span>
-                    <span class="ooda-label">意图</span>
-                    <span class="ooda-text">{currentIntent()}</span>
-                  </div>
-                </Show>
-                <Show when={currentReasoning()}>
-                  <div class="ooda-item reasoning">
-                    <span class="ooda-icon">💡</span>
-                    <span class="ooda-label">推理</span>
-                    <span class="ooda-text">{currentReasoning()}</span>
-                  </div>
-                </Show>
-              </div>
-            </Show>
-            {/* 流式内容 - 直接显示，无打字机效果 */}
-            <Show when={streamingContent()}>
-              <div class="streaming-text">
-                <span class="streaming-content-raw">{streamingContent()}</span>
-              </div>
-            </Show>
-            {/* 加载状态 */}
-            <Show when={!streamingContent() && isLoading()}>
-              <div class="streaming-loading">
-                <div class="loading-spinner"></div>
-                <span>正在思考...</span>
-              </div>
-            </Show>
-            {/* SSE 事件日志 - 可展开 */}
-            <Show when={sseLogs().length > 0}>
-              <div class="sse-logs">
-                <button class="sse-logs-toggle" onClick={() => setShowSseLogs(!showSseLogs())}>
-                  <span>SSE 事件 ({sseLogs().length})</span>
-                  <span class="toggle-icon">{showSseLogs() ? '▼' : '▶'}</span>
-                </button>
-                <Show when={showSseLogs()}>
-                  <div class="sse-logs-list">
-                    <For each={sseLogs()}>
-                      {(log) => (
-                        <div class={`sse-log-item ${log.type}`}>
-                          <span class="log-type">{log.type}</span>
-                          <span class="log-content">{log.content || '(无)'}</span>
-                          <span class="log-time">{new Date(log.time).toLocaleTimeString()}</span>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
         <div class="messages-container" ref={messagesContainer}>
           <Show when={messages().length === 0 && !isLoading()}>
             <div class="empty-state">
@@ -1330,6 +1246,40 @@ function App() {
                       <span class="message-author">{msg.role === 'user' ? '你' : 'OODA Agent'}</span>
                       <span class="message-time">{formatTime(msg.timestamp)}</span>
                     </div>
+                    <Show when={msg.role === 'assistant' && (msg.thinking || msg.intent || msg.reasoning)}>
+                      <div class="message-ooda-process">
+                        <div class="ooda-header">
+                          <span class="ooda-title">🔍 OODA 分析过程</span>
+                        </div>
+                        <Show when={msg.thinking}>
+                          <div class="ooda-item thinking">
+                            <span class="ooda-icon">💭</span>
+                            <div class="ooda-content">
+                              <span class="ooda-label">思考</span>
+                              <span class="ooda-text">{msg.thinking}</span>
+                            </div>
+                          </div>
+                        </Show>
+                        <Show when={msg.intent}>
+                          <div class="ooda-item intent">
+                            <span class="ooda-icon">🎯</span>
+                            <div class="ooda-content">
+                              <span class="ooda-label">意图</span>
+                              <span class="ooda-text">{msg.intent}</span>
+                            </div>
+                          </div>
+                        </Show>
+                        <Show when={msg.reasoning}>
+                          <div class="ooda-item reasoning">
+                            <span class="ooda-icon">💡</span>
+                            <div class="ooda-content">
+                              <span class="ooda-label">推理</span>
+                              <span class="ooda-text">{msg.reasoning}</span>
+                            </div>
+                          </div>
+                        </Show>
+                      </div>
+                    </Show>
                     <div class="message-content">
                       <MarkdownRenderer content={msg.content} />
                     </div>
@@ -1338,8 +1288,8 @@ function App() {
               )}
             </For>
             
-            <Show when={isLoading()}>
-              <div class="message assistant loading">
+            <Show when={isStreaming() || (isLoading() && !streamingContent())}>
+              <div class="message assistant streaming">
                 <div class="message-avatar">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10"/>
@@ -1347,11 +1297,57 @@ function App() {
                   </svg>
                 </div>
                 <div class="message-body">
-                  <div class="typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
+                  <div class="message-header">
+                    <span class="message-author">OODA Agent</span>
+                    <span class="message-time">{formatTime(Date.now())}</span>
                   </div>
+                  <Show when={currentThinking() || currentIntent() || currentReasoning()}>
+                    <div class="message-ooda-process streaming">
+                      <div class="ooda-header">
+                        <span class="ooda-title">🔍 OODA 分析过程</span>
+                        <span class="ooda-status">进行中...</span>
+                      </div>
+                      <Show when={currentThinking()}>
+                        <div class="ooda-item thinking">
+                          <span class="ooda-icon">💭</span>
+                          <div class="ooda-content">
+                            <span class="ooda-label">思考</span>
+                            <span class="ooda-text">{currentThinking()}</span>
+                          </div>
+                        </div>
+                      </Show>
+                      <Show when={currentIntent()}>
+                        <div class="ooda-item intent">
+                          <span class="ooda-icon">🎯</span>
+                          <div class="ooda-content">
+                            <span class="ooda-label">意图</span>
+                            <span class="ooda-text">{currentIntent()}</span>
+                          </div>
+                        </div>
+                      </Show>
+                      <Show when={currentReasoning()}>
+                        <div class="ooda-item reasoning">
+                          <span class="ooda-icon">💡</span>
+                          <div class="ooda-content">
+                            <span class="ooda-label">推理</span>
+                            <span class="ooda-text">{currentReasoning()}</span>
+                          </div>
+                        </div>
+                      </Show>
+                    </div>
+                  </Show>
+                  <Show when={streamingContent()}>
+                    <div class="message-content streaming">
+                      <MarkdownRenderer content={streamingContent()} />
+                    </div>
+                  </Show>
+                  <Show when={!streamingContent()}>
+                    <div class="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </Show>
                 </div>
               </div>
             </Show>

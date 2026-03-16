@@ -6,9 +6,11 @@ import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
 
-/**
- * 合并的思考回调类型
- */
+export { ObserveAgent } from './observe';
+export { OrientAgent } from './agent/orient';
+export { DecideAgent } from './agent/decide';
+export { ActAgent } from './agent/act';
+
 type ThinkingCallback = (phase: 'orient' | 'decide', type: string, content: string) => void | Promise<void>;
 
 interface CacheEntry<T> {
@@ -40,7 +42,7 @@ export interface OODAEvent {
     options?: string[];
     selectedOption?: string;
     chunk?: string;
-    output?: string;  // complete 事件中的输出内容
+    output?: string;
     toolCall?: {
       id: string;
       name: string;
@@ -92,6 +94,7 @@ export class OODALoop {
   private loopContext: LoopContext;
   private streamingManager?: StreamingOutputManager;
   private thinkingCallback?: ThinkingCallback;
+  private streamContentCallback?: (chunk: string, isComplete: boolean) => Promise<void>;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -103,7 +106,7 @@ export class OODALoop {
   private decisionCache = new Map<string, CacheEntry<Decision>>();
   
   private cacheTTL = 60000;
-  private enableCache = false;
+  private cacheEnabled = false;
   private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
   
@@ -116,38 +119,33 @@ export class OODALoop {
     this.decider = new Decider();
     this.actor = new Actor(this.sessionId);
     
-    // 初始化流式输出管理器
     if (streamingHandler) {
       this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
     }
   }
 
-  /**
-   * 启用流式输出
-   */
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   enableStreaming(handler: StreamingHandler, config?: Partial<StreamingConfig>): void {
     this.streamingManager = new StreamingOutputManager(handler, config, this.sessionId);
   }
 
-  /**
-   * 禁用流式输出
-   */
   disableStreaming(): void {
     this.streamingManager = undefined;
   }
 
-  /**
-   * 获取流式输出管理器
-   */
   getStreamingManager(): StreamingOutputManager | undefined {
     return this.streamingManager;
   }
 
-  /**
-   * 设置思考过程回调 - 用于实时推送 LLM 思考内容
-   */
   setThinkingCallback(callback: ThinkingCallback): void {
     this.thinkingCallback = callback;
+  }
+
+  setStreamContentCallback(callback: (chunk: string, isComplete: boolean) => Promise<void>): void {
+    this.streamContentCallback = callback;
   }
 
   async run(input: string): Promise<AgentResult> {
@@ -176,7 +174,7 @@ export class OODALoop {
           syncedCount++;
         }
       }
-      console.log(`[OODA] Synced ${syncedCount} new history messages to session memory (total existing: ${existingMessages.length})`);
+      console.log(`[OODA] Synced ${syncedCount} new history messages to session memory`);
     }
     
     const memoryMessages = this.sessionMemory.getShortTerm().getRecentMessages(100);
@@ -188,29 +186,13 @@ export class OODALoop {
     if (memoryMessages.length > COMPRESS_THRESHOLD) {
       const oldMessagesCount = memoryMessages.length - 10;
       initOrienterCompressedCount(this.sessionId, oldMessagesCount);
-      console.log(`[OODA] Initialized Orienter compressedCount to ${oldMessagesCount} for ${memoryMessages.length} messages`);
     }
     
     const initialHistory: Message[] = memoryMessages.length > 0
-      ? [...memoryMessages, {
-          id: `msg-${Date.now()}`,
-          role: 'user' as const,
-          content: input,
-          timestamp: Date.now(),
-        }]
+      ? [...memoryMessages, { id: `msg-${Date.now()}`, role: 'user' as const, content: input, timestamp: Date.now() }]
       : history
-        ? [...history, {
-            id: `msg-${Date.now()}`,
-            role: 'user' as const,
-            content: input,
-            timestamp: Date.now(),
-          }]
-        : [{
-            id: 'initial',
-            role: 'user' as const,
-            content: input,
-            timestamp: Date.now(),
-          }];
+        ? [...history, { id: `msg-${Date.now()}`, role: 'user' as const, content: input, timestamp: Date.now() }]
+        : [{ id: 'initial', role: 'user' as const, content: input, timestamp: Date.now() }];
     
     const initialState: AgentState = {
       originalInput: input,
@@ -240,27 +222,15 @@ export class OODALoop {
     
     this.cleanupCache();
     
-    // 在 complete 事件中包含输出内容
     const output = state.result?.output || '';
     const completeEvent = { 
       phase: 'complete' as const,
-      data: {
-        output,
-      }
+      data: { output }
     };
     await callback(completeEvent);
     await this.streamingManager?.handleOODAEvent(completeEvent);
     
-    return this.finalizeResult(state);
-  }
-
-  getSessionId(): string {
-    return this.sessionId;
-  }
-
-  clearSessionContext(): void {
-    sessionLoopContextManager.clearContext(this.sessionId);
-    this.sessionMemory.clear();
+    return state.result || { output: '', steps: [], metadata: {} };
   }
 
   private async executeOODACycle(state: AgentState, callback: OODACallback): Promise<AgentState> {
@@ -288,7 +258,6 @@ export class OODALoop {
     console.log('[OODA] Getting orientation...');
     
     let orientation: Orientation;
-    // 如果有 thinkingCallback，使用流式版本的 orient
     if (this.thinkingCallback) {
       const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
         await this.thinkingCallback!('orient', type, content);
@@ -315,7 +284,6 @@ export class OODALoop {
     console.log('[OODA] Getting decision...');
     
     let decision: Decision;
-    // 如果有 thinkingCallback，使用流式版本的 decide
     if (this.thinkingCallback) {
       const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
         await this.thinkingCallback!('decide', type, content);
@@ -358,6 +326,55 @@ export class OODALoop {
       await this.streamingManager?.handleOODAEvent(toolCallEvent);
     }
     
+    // 如果是响应类型且设置了流式回调，使用流式生成
+    if (decision.nextAction.type === 'response' && this.streamContentCallback) {
+      const action = decision.nextAction;
+      const content = action.content || '';
+      
+      // 流式发送响应内容
+      const chunkSize = 5;
+      for (let i = 0; i < content.length; i += chunkSize) {
+        const chunk = content.slice(i, i + chunkSize);
+        await this.streamContentCallback(chunk, i + chunkSize >= content.length);
+      }
+      
+      const actionResult = {
+        success: true,
+        result: { type: 'response', content },
+        feedback: {
+          observations: [content],
+          newInformation: [] as string[],
+          issues: [] as string[],
+          suggestions: [] as string[],
+        },
+        sideEffects: [],
+        executionTime: Date.now() - actStart,
+      };
+      
+      this.loopContext.previousResults.push(actionResult);
+      
+      metrics.actTime = Date.now() - actStart;
+      metrics.totalTime = Date.now() - cycleStartTime;
+      this.performanceMetrics.push(metrics);
+      
+      return {
+        ...state,
+        currentStep: state.currentStep + 1,
+        isComplete: true,
+        history: [...state.history, {
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: content,
+          timestamp: Date.now(),
+        }],
+        result: {
+          output: content,
+          steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
+          metadata: { actionResult },
+        },
+      };
+    }
+    
     const actionResult = await this.actor.act(decision);
     this.loopContext.previousResults.push(actionResult);
     
@@ -392,429 +409,159 @@ export class OODALoop {
       await this.streamingManager?.handleOODAEvent(toolResultEvent);
     }
     metrics.actTime = Date.now() - actStart;
-    
     metrics.totalTime = Date.now() - cycleStartTime;
     this.performanceMetrics.push(metrics);
     
-    this.extractLearningInsights(actionResult, decision);
+    const isComplete = decision.nextAction.type === 'response' || actionResult.success;
     
-    const newMessages: Message[] = [];
-    
-    if (decision.nextAction.type === 'response' && decision.nextAction.content) {
-      newMessages.push({
-        id: `response-${state.currentStep}`,
-        role: 'assistant',
-        content: decision.nextAction.content,
-        timestamp: Date.now(),
-        parts: [{
-          type: 'text',
-          text: decision.nextAction.content,
-        }],
-      });
-    } else {
-      newMessages.push({
-        id: `step-${state.currentStep}`,
-        role: 'assistant',
-        content: decision.reasoning,
-        timestamp: Date.now(),
-        parts: [{
-          type: 'text',
-          text: decision.reasoning,
-        }],
-      });
-    }
-    
-    if (decision.nextAction.type === 'tool_call' || decision.nextAction.type === 'skill_call') {
-      newMessages.push({
-        id: `action-${state.currentStep}`,
-        role: 'assistant',
-        content: JSON.stringify(decision.nextAction),
-        timestamp: Date.now(),
-        parts: [{
-          type: 'tool_call',
-          toolCallId: `call-${state.currentStep}`,
-          toolName: decision.nextAction.toolName!,
-          args: decision.nextAction.args!,
-        }],
-      });
-      
-      newMessages.push({
-        id: `result-${state.currentStep}`,
-        role: 'tool',
-        content: JSON.stringify(actionResult.result),
-        timestamp: Date.now(),
-        parts: [{
-          type: 'tool_result',
-          toolCallId: `call-${state.currentStep}`,
-          result: actionResult.result,
-          isError: !actionResult.success,
-        }],
-      });
-    }
-    
-    const isComplete = this.determineCompletion(decision, actionResult);
-    
-    const updatedState: AgentState = {
+    return {
       ...state,
-      history: [
-        ...state.history,
-        ...newMessages,
-      ],
       currentStep: state.currentStep + 1,
       isComplete,
-      metadata: {
-        ...state.metadata,
-        lastAction: decision.nextAction,
-        lastResult: actionResult,
-        performanceMetrics: metrics,
-        learningInsights: this.loopContext.learningInsights,
-        conversationSummary: this.loopContext.conversationSummary,
-      },
+      history: [...state.history, {
+        id: `msg-${Date.now()}`,
+        role: 'assistant',
+        content: actionResult.feedback.observations.join(' '),
+        timestamp: Date.now(),
+      }],
+      result: isComplete ? {
+        output: actionResult.feedback.observations.join('\n'),
+        steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
+        metadata: { actionResult },
+      } : state.result,
     };
-    
-    if (updatedState.isComplete) {
-      const output = this.generateFinalOutput(decision, actionResult);
-      updatedState.result = {
-        output,
-        steps: updatedState.history.map((msg, index) => ({
-          type: index % 3 === 0 ? 'thought' : index % 3 === 1 ? 'action' : 'observation',
-          content: msg.content,
-          timestamp: msg.timestamp,
-        })),
-        metadata: {
-          ...updatedState.metadata,
-          performanceMetrics: this.getAveragePerformanceMetrics(),
-          totalIterations: this.currentIteration + 1,
-          learningInsights: this.loopContext.learningInsights,
-        },
-      };
-    }
-    
-    return updatedState;
-  }
-
-  private enrichObservationWithContext(observation: Observation): void {
-    if (this.loopContext.previousResults.length > 0) {
-      const recentFeedback = this.loopContext.previousResults
-        .slice(-3)
-        .flatMap(r => r.feedback.observations);
-      
-      observation.context.relevantFacts.push(...recentFeedback);
-    }
-    
-    if (this.loopContext.learningInsights.length > 0) {
-      observation.context.relevantFacts.push(...this.loopContext.learningInsights.slice(-5));
-    }
-    
-    if (this.loopContext.conversationSummary) {
-      observation.context.relevantFacts.unshift(`对话摘要: ${this.loopContext.conversationSummary}`);
-    }
-  }
-
-  private shouldAdapt(state: AgentState): boolean {
-    const recentResults = this.loopContext.previousResults.slice(-3);
-    if (recentResults.length < 2) return false;
-    
-    const failureRate = recentResults.filter(r => !r.success).length / recentResults.length;
-    if (failureRate >= 0.5) return true;
-    
-    const repeatedErrors = this.findRepeatedErrors(recentResults);
-    if (repeatedErrors.length > 0) return true;
-    
-    return false;
-  }
-
-  private findRepeatedErrors(results: ActionResult[]): string[] {
-    const errorMessages: Record<string, number> = {};
-    
-    for (const result of results) {
-      if (!result.success) {
-        const errorMsg = result.feedback.issues.join('; ');
-        errorMessages[errorMsg] = (errorMessages[errorMsg] || 0) + 1;
-      }
-    }
-    
-    return Object.entries(errorMessages)
-      .filter(([_, count]) => count >= 2)
-      .map(([msg, _]) => msg);
-  }
-
-  private async adaptStrategy(state: AgentState, callback: OODACallback): Promise<void> {
-    const recentErrors = this.loopContext.previousResults
-      .filter(r => !r.success)
-      .flatMap(r => r.feedback.issues);
-    
-    const adaptationNote = `检测到重复失败模式: ${recentErrors.slice(0, 3).join(', ')}. 建议调整策略.`;
-    this.loopContext.adaptationNotes.push(adaptationNote);
-    
-    const adaptationEvent = {
-      phase: 'adaptation' as const,
-      data: {
-        adaptation: {
-          reason: '检测到高失败率或重复错误',
-          action: '将在下一轮迭代中调整决策策略',
-        }
-      }
-    };
-    await callback(adaptationEvent);
-    await this.streamingManager?.handleOODAEvent(adaptationEvent);
-    
-    console.log(`[OODA] Adapting strategy: ${adaptationNote}`);
-  }
-
-  private extractLearningInsights(actionResult: ActionResult, decision: Decision): void {
-    if (!actionResult.success) {
-      const insight = `方案 "${decision.selectedOption.description}" 失败: ${actionResult.feedback.issues.join(', ')}`;
-      this.loopContext.learningInsights.push(insight);
-    } else if (actionResult.feedback.newInformation.length > 0) {
-      const insight = actionResult.feedback.newInformation[0];
-      this.loopContext.learningInsights.push(insight);
-    }
-    
-    if (this.loopContext.learningInsights.length > 20) {
-      this.loopContext.learningInsights = this.loopContext.learningInsights.slice(-15);
-    }
-  }
-
-  private determineCompletion(decision: Decision, actionResult: ActionResult): boolean {
-    if (decision.nextAction.type === 'response') {
-      return true;
-    }
-    
-    if (decision.nextAction.type === 'clarification') {
-      return true;
-    }
-    
-    if (actionResult.success && decision.plan.subtasks.length === 0) {
-      return true;
-    }
-    
-    const pendingTasks = decision.plan.subtasks.filter(t => t.status === 'pending');
-    if (pendingTasks.length === 0 && actionResult.success) {
-      return true;
-    }
-    
-    return false;
-  }
-
-  private generateFinalOutput(decision: Decision, actionResult: ActionResult): string {
-    if (decision.nextAction.type === 'response') {
-      return decision.nextAction.content || '任务完成';
-    }
-    
-    if (decision.nextAction.type === 'clarification') {
-      return decision.nextAction.clarificationQuestion || '需要更多信息';
-    }
-    
-    if (actionResult.success) {
-      const resultData = actionResult.result as Record<string, unknown>;
-      if (resultData && resultData.result) {
-        if (typeof resultData.result === 'string') {
-          return resultData.result;
-        }
-        try {
-          return JSON.stringify(resultData.result, null, 2);
-        } catch {
-          return '任务完成';
-        }
-      }
-      return '任务完成';
-    }
-    
-    return `任务执行遇到问题: ${actionResult.feedback.issues.join(', ')}`;
   }
 
   private async getCachedObservation(state: AgentState): Promise<Observation> {
-    if (!this.enableCache) {
+    if (!this.cacheEnabled) {
       return this.observer.observe(state);
     }
-    
-    const cacheKey = this.generateCacheKey(state);
-    const cached = this.observationCache.get(cacheKey);
-    
-    if (cached && Date.now() - cached.timestamp < cached.ttl) {
+    const key = this.generateCacheKey(state);
+    const cached = this.observationCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
       return cached.value;
     }
-    
     const observation = await this.observer.observe(state);
-    
-    this.observationCache.set(cacheKey, {
-      value: observation,
-      timestamp: Date.now(),
-      ttl: this.cacheTTL,
-    });
-    
+    this.observationCache.set(key, { value: observation, timestamp: Date.now(), ttl: this.cacheTTL });
     return observation;
   }
 
   private async getCachedOrientation(observation: Observation): Promise<Orientation> {
-    if (!this.enableCache) {
+    if (!this.cacheEnabled) {
       return this.orienter.orient(observation);
     }
-    
-    const cacheKey = this.generateObservationKey(observation);
-    const cached = this.orientationCache.get(cacheKey);
-    
-    if (cached && Date.now() - cached.timestamp < cached.ttl) {
+    const key = JSON.stringify({ observation: observation.environment });
+    const cached = this.orientationCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
       return cached.value;
     }
-    
     const orientation = await this.orienter.orient(observation);
-    
-    this.orientationCache.set(cacheKey, {
-      value: orientation,
-      timestamp: Date.now(),
-      ttl: this.cacheTTL,
-    });
-    
+    this.orientationCache.set(key, { value: orientation, timestamp: Date.now(), ttl: this.cacheTTL });
     return orientation;
   }
 
   private async getCachedDecision(orientation: Orientation): Promise<Decision> {
-    if (!this.enableCache) {
+    if (!this.cacheEnabled) {
       return this.decider.decide(orientation);
     }
-    
-    const cacheKey = this.generateOrientationKey(orientation);
-    const cached = this.decisionCache.get(cacheKey);
-    
-    if (cached && Date.now() - cached.timestamp < cached.ttl) {
+    const key = JSON.stringify({ intent: orientation.primaryIntent.type });
+    const cached = this.decisionCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
       return cached.value;
     }
-    
     const decision = await this.decider.decide(orientation);
-    
-    this.decisionCache.set(cacheKey, {
-      value: decision,
-      timestamp: Date.now(),
-      ttl: this.cacheTTL,
-    });
-    
+    this.decisionCache.set(key, { value: decision, timestamp: Date.now(), ttl: this.cacheTTL });
     return decision;
   }
 
   private generateCacheKey(state: AgentState): string {
-    const historyHash = state.history.slice(-3).map(m => m.content?.slice(0, 50) || '').join('|');
-    return `${state.originalInput.slice(0, 50)}-${state.currentStep}-${historyHash}`;
+    return `${state.originalInput}:${state.history.length}`;
   }
 
-  private generateObservationKey(observation: Observation): string {
-    const toolHash = observation.toolResults.slice(-2).map(r => r.toolName).join('|');
-    return `${observation.userInput.slice(0, 50)}-${toolHash}-${Date.now()}`;
-  }
-
-  private generateOrientationKey(orientation: Orientation): string {
-    const intentHash = `${orientation.primaryIntent.type}-${orientation.primaryIntent.confidence}`;
-    const constraintHash = orientation.constraints.slice(0, 2).map(c => c.type).join('|');
-    return `${intentHash}-${constraintHash}-${Date.now()}`;
+  private enrichObservationWithContext(observation: Observation): void {
+    // 可扩展：在观察阶段添加额外上下文
   }
 
   private optimizeHistory(state: AgentState): AgentState {
     if (state.history.length > this.maxHistorySize) {
-      const recentHistory = state.history.slice(-this.maxHistorySize);
       return {
         ...state,
-        history: recentHistory,
+        history: state.history.slice(-this.maxHistorySize),
       };
     }
     return state;
   }
 
-  private cleanupCache(): void {
-    const now = Date.now();
-    
-    for (const [key, entry] of this.observationCache.entries()) {
-      if (now - entry.timestamp > entry.ttl) {
-        this.observationCache.delete(key);
-      }
-    }
-    
-    for (const [key, entry] of this.orientationCache.entries()) {
-      if (now - entry.timestamp > entry.ttl) {
-        this.orientationCache.delete(key);
-      }
-    }
-    
-    for (const [key, entry] of this.decisionCache.entries()) {
-      if (now - entry.timestamp > entry.ttl) {
-        this.decisionCache.delete(key);
-      }
-    }
+  private shouldAdapt(state: AgentState): boolean {
+    if (!this.loopContext.previousResults.length) return false;
+    const recentResults = this.loopContext.previousResults.slice(-3);
+    const failureRate = recentResults.filter(r => !r.success).length / recentResults.length;
+    return failureRate >= 0.5 || this.findRepeatedErrors(recentResults).length > 0;
   }
 
-  private getAveragePerformanceMetrics(): PerformanceMetrics {
-    if (this.performanceMetrics.length === 0) {
-      return {
-        observeTime: 0,
-        orientTime: 0,
-        decideTime: 0,
-        actTime: 0,
-        totalTime: 0,
-      };
+  private findRepeatedErrors(results: ActionResult[]): string[] {
+    const errorTools: string[] = [];
+    for (const result of results) {
+      if (!result.success) {
+        errorTools.push(JSON.stringify(result));
+      }
     }
-    
-    const sum = this.performanceMetrics.reduce((acc, metrics) => ({
-      observeTime: acc.observeTime + metrics.observeTime,
-      orientTime: acc.orientTime + metrics.orientTime,
-      decideTime: acc.decideTime + metrics.decideTime,
-      actTime: acc.actTime + metrics.actTime,
-      totalTime: acc.totalTime + metrics.totalTime,
-    }), {
-      observeTime: 0,
-      orientTime: 0,
-      decideTime: 0,
-      actTime: 0,
-      totalTime: 0,
-    });
-    
-    const count = this.performanceMetrics.length;
-    
-    return {
-      observeTime: Math.round(sum.observeTime / count),
-      orientTime: Math.round(sum.orientTime / count),
-      decideTime: Math.round(sum.decideTime / count),
-      actTime: Math.round(sum.actTime / count),
-      totalTime: Math.round(sum.totalTime / count),
+    return errorTools;
+  }
+
+  private async adaptStrategy(state: AgentState, callback: OODACallback): Promise<void> {
+    const adaptationEvent = {
+      phase: 'adaptation' as const,
+      data: {
+        adaptation: {
+          reason: 'High failure rate detected',
+          action: 'Adjusting strategy',
+        }
+      }
     };
+    await callback(adaptationEvent);
+    await this.streamingManager?.handleOODAEvent(adaptationEvent);
+    this.loopContext.adaptationNotes.push(`[Iteration ${this.currentIteration}] Adapted strategy`);
   }
 
   private handleTimeout(state: AgentState): AgentResult {
     return {
       output: '任务执行超时',
-      steps: state.history.map((msg, index) => ({
-        type: index % 3 === 0 ? 'thought' : index % 3 === 1 ? 'action' : 'observation',
-        content: msg.content,
-        timestamp: msg.timestamp,
-      })),
-      metadata: {
-        ...state.metadata,
-        isTimeout: true,
-        iterations: this.currentIteration,
-        timeout: this.timeout,
-        performanceMetrics: this.getAveragePerformanceMetrics(),
-        learningInsights: this.loopContext.learningInsights,
-      },
+      steps: state.result?.steps || [],
+      metadata: { error: 'timeout' },
     };
   }
 
-  private finalizeResult(state: AgentState): AgentResult {
-    if (state.result) {
-      return state.result;
+  private cleanupCache(): void {
+    if (this.observationCache.size > this.maxCacheSize) {
+      this.observationCache.clear();
     }
-    
-    return {
-      output: '任务执行未完成',
-      steps: state.history.map((msg, index) => ({
-        type: index % 3 === 0 ? 'thought' : index % 3 === 1 ? 'action' : 'observation',
-        content: msg.content,
-        timestamp: msg.timestamp,
-      })),
-      metadata: {
-        ...state.metadata,
-        iterations: this.currentIteration,
-        performanceMetrics: this.getAveragePerformanceMetrics(),
-        learningInsights: this.loopContext.learningInsights,
-      },
-    };
+    if (this.orientationCache.size > this.maxCacheSize) {
+      this.orientationCache.clear();
+    }
+    if (this.decisionCache.size > this.maxCacheSize) {
+      this.decisionCache.clear();
+    }
+  }
+
+  getPerformanceMetrics(): PerformanceMetrics[] {
+    return this.performanceMetrics;
+  }
+
+  clearCache(): void {
+    this.observationCache.clear();
+    this.orientationCache.clear();
+    this.decisionCache.clear();
+  }
+
+  enableCache(ttl?: number, maxSize?: number): void {
+    this.cacheEnabled = true;
+    if (ttl) this.cacheTTL = ttl;
+    if (maxSize) this.maxCacheSize = maxSize;
+  }
+
+  disableCache(): void {
+    this.cacheEnabled = false;
+    this.clearCache();
   }
 }

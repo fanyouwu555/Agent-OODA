@@ -5,13 +5,18 @@ import { createSignal, onCleanup } from 'solid-js';
 
 // 事件类型定义（与后端 SSEEvent 对应）
 export interface FrontendEvent {
-  id: string;
-  namespace: string;
-  action: string;
+  id?: string;
+  namespace?: string;
+  action?: string;
   sessionId?: string;
-  payload: unknown;
-  timestamp: number;
+  payload?: unknown;
+  timestamp?: number;
+  // OODA 事件专用字段
+  type?: string;
+  content?: string;
 }
+
+export type OODAEventHandler = (event: { type: string; content?: string }) => void;
 
 export type EventHandler = (event: FrontendEvent) => void;
 
@@ -57,6 +62,15 @@ export function createEventClient(options: EventClientOptions = {}) {
     
     // 全局通配符
     handlers.get('*')?.forEach(handler => handler(event));
+  };
+
+  // OODA 事件发射器 - 用于 thinking, intent, reasoning, content 等事件
+  let oodaHandlers: Map<string, Set<OODAEventHandler>> = new Map();
+  
+  const emitOODA = (type: string, data: { content?: string }) => {
+    const event = { type, ...data };
+    oodaHandlers.get(type)?.forEach(handler => handler(event));
+    oodaHandlers.get('*')?.forEach(handler => handler(event));
   };
   
   // 连接
@@ -118,6 +132,21 @@ export function createEventClient(options: EventClientOptions = {}) {
     eventSource.addEventListener('heartbeat', (e: MessageEvent) => {
       // 心跳事件，保持连接活跃
       // console.log('[EventClient] Heartbeat');
+    });
+
+    // 监听 OODA 流式事件 (thinking, intent, reasoning, content, result 等)
+    const oodaEventTypes = ['thinking', 'intent', 'reasoning', 'content', 'result', 'tool_call', 'tool_result'];
+    oodaEventTypes.forEach(eventType => {
+      eventSource!.addEventListener(eventType, (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          console.log(`[EventClient] Received ${eventType} event:`, data);
+          setLastEvent({ type: eventType, ...data });
+          emitOODA(eventType, data);
+        } catch (err) {
+          console.error(`[EventClient] Failed to parse ${eventType} event:`, err);
+        }
+      });
     });
     
     // 订阅特定命名空间的事件
@@ -208,6 +237,15 @@ export function createEventClient(options: EventClientOptions = {}) {
     
     // 订阅
     on,
+    
+    // OODA 事件订阅
+    onOODA: (type: string, handler: OODAEventHandler): (() => void) => {
+      if (!oodaHandlers.has(type)) {
+        oodaHandlers.set(type, new Set());
+      }
+      oodaHandlers.get(type)!.add(handler);
+      return () => oodaHandlers.get(type)?.delete(handler);
+    },
     
     // 便捷方法
     onMessagePart,

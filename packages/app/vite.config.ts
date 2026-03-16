@@ -1,8 +1,7 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 
-const apiPort = '34568';
-const wsPort = '34568';
+const apiPort = process.env.VITE_API_PORT || '3000';
 
 export default defineConfig({
   plugins: [solid()],
@@ -12,17 +11,13 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5174,
+    port: 5175,
     strictPort: false,
     host: '0.0.0.0',
     proxy: {
       '/api': {
         target: `http://localhost:${apiPort}`,
         changeOrigin: true,
-      },
-      '/ws': {
-        target: `ws://localhost:${wsPort}`,
-        ws: true,
       },
     },
   },

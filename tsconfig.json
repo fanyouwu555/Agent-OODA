@@ -36,7 +36,9 @@
   "include": [
     "packages/core/**/*",
     "packages/server/**/*",
-    "packages/tools/**/*"
+    "packages/tools/**/*",
+    "packages/storage/**/*",
+    "types/**/*"
   ],
   "exclude": [
     "node_modules",

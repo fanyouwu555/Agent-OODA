@@ -520,9 +520,10 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     
     const pendingTasks = plan.subtasks.filter(t => t.status === 'pending');
     if (pendingTasks.length === 0) {
+      const response = await this.generateLLMResponse(orientation, analysis);
       return {
         type: 'response',
-        content: '任务已完成',
+        content: response,
       };
     }
     

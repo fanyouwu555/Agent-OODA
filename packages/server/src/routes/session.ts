@@ -4,7 +4,7 @@ import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManage
 import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import { detailedLogger } from '../utils/detailed-logger';
-import WebSocket from 'ws';
+import { eventBus } from './events';
 
 const sessionRoutes = new Hono();
 
@@ -34,10 +34,6 @@ async function getStorage() {
   return storagePromise;
 }
 
-const wsClients = new Map<string, Set<WebSocket>>();
-const wsClientSessions = new Map<WebSocket, Set<string>>();
-const wsHeartbeats = new Map<WebSocket, NodeJS.Timeout>();
-
 const pendingConfirmations = new Map<string, {
   resolve: (allowed: boolean) => void;
   sessionId: string;
@@ -45,110 +41,15 @@ const pendingConfirmations = new Map<string, {
 
 const toolRegistry = initializeTools();
 
-function heartbeat(ws: WebSocket) {
-  wsHeartbeats.delete(ws);
-}
-
-export function cleanupWebSocket(ws: WebSocket) {
-  const sessions = wsClientSessions.get(ws);
-  if (sessions) {
-    sessions.forEach(sessionId => {
-      wsClients.get(sessionId)?.delete(ws);
-      if (wsClients.get(sessionId)?.size === 0) {
-        wsClients.delete(sessionId);
-      }
-    });
-    wsClientSessions.delete(ws);
-  }
-  const heartbeatTimer = wsHeartbeats.get(ws);
-  if (heartbeatTimer) {
-    clearTimeout(heartbeatTimer);
-    wsHeartbeats.delete(ws);
-  }
-}
-
-export function setupHeartbeat(ws: WebSocket) {
-  const existingTimer = wsHeartbeats.get(ws);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-  
-  const timer = setTimeout(() => {
-    console.log('[WebSocket] Heartbeat timeout, terminating connection');
-    cleanupWebSocket(ws);
-    ws.terminate();
-  }, 30000);
-  
-  wsHeartbeats.set(ws, timer);
-}
-
-export function handleWebSocketMessage(ws: WebSocket, message: string) {
-  try {
-    const msg: WSMessage = JSON.parse(message);
-    
-    switch (msg.type) {
-      case 'subscribe': {
-        const sessionId = msg.payload as string;
-        if (!wsClients.has(sessionId)) {
-          wsClients.set(sessionId, new Set());
-        }
-        wsClients.get(sessionId)!.add(ws);
-        
-        if (!wsClientSessions.has(ws)) {
-          wsClientSessions.set(ws, new Set());
-        }
-        wsClientSessions.get(ws)!.add(sessionId);
-        
-        ws.send(JSON.stringify({ type: 'subscribed', payload: sessionId }));
-        break;
-      }
-      
-      case 'unsubscribe': {
-        const sessionId = msg.payload as string;
-        wsClients.get(sessionId)?.delete(ws);
-        if (wsClients.get(sessionId)?.size === 0) {
-          wsClients.delete(sessionId);
-        }
-        wsClientSessions.get(ws)?.delete(sessionId);
-        ws.send(JSON.stringify({ type: 'unsubscribed', payload: sessionId }));
-        break;
-      }
-      
-      case 'confirmation': {
-        const { id, allowed } = msg.payload as { id: string; allowed: boolean };
-        const pending = pendingConfirmations.get(id);
-        if (pending) {
-          pending.resolve(allowed);
-          pendingConfirmations.delete(id);
-        }
-        break;
-      }
-      
-      case 'ping':
-        setupHeartbeat(ws);
-        ws.send(JSON.stringify({ type: 'pong' }));
-        break;
-    }
-  } catch (error) {
-    console.error('[WebSocket] Error handling message:', error);
-  }
-}
-
-export function broadcastToSession(sessionId: string, message: unknown) {
-  const clients = wsClients.get(sessionId);
-  if (clients) {
-    const messageStr = JSON.stringify(message);
-    detailedLogger.logWSBroadcast(sessionId, (message as { type?: string })?.type || 'unknown', clients.size);
-    clients.forEach(client => {
-      try {
-        client.send(messageStr);
-        detailedLogger.logWSMessage(sessionId, 'outgoing', message);
-      } catch (error) {
-        console.error('[WebSocket] Error broadcasting:', error);
-        detailedLogger.logWSError(sessionId, 'Error broadcasting', error);
-      }
-    });
-  }
+function publishToSession(sessionId: string, namespace: string, action: string, payload: unknown) {
+  eventBus.publish({
+    id: `evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    namespace,
+    action,
+    sessionId,
+    payload,
+    timestamp: Date.now()
+  });
 }
 
 export function requestConfirmation(
@@ -162,14 +63,11 @@ export function requestConfirmation(
     
     detailedLogger.info('PERMISSION', `Requesting confirmation for ${toolName}`, { confirmationId, args }, sessionId);
     
-    broadcastToSession(sessionId, {
-      type: 'confirmation',
-      payload: {
-        id: confirmationId,
-        toolName,
-        args,
-        timestamp: Date.now()
-      }
+    publishToSession(sessionId, 'permission', 'asked', {
+      id: confirmationId,
+      toolName,
+      args,
+      timestamp: Date.now()
     });
     
     setTimeout(() => {
@@ -271,6 +169,7 @@ sessionRoutes
         console.log(`[SSE] Sending event: ${type}`);
         detailedLogger.logSSESend(sessionId, type, data);
         await stream.writeSSE({
+          event: type,
           data: JSON.stringify({ type, ...data }),
         });
       };
@@ -322,6 +221,14 @@ sessionRoutes
               await sendEvent('reasoning', { content });
             }
           }
+        });
+        
+        // 设置流式内容回调 - 实时推送最终响应内容
+        oodaLoop.setStreamContentCallback(async (chunk: string, isComplete: boolean) => {
+          await sendEvent('content', { 
+            content: chunk,
+            isComplete 
+          });
         });
         
         console.log(`[DEBUG] OODALoop created with sessionId: ${oodaLoop.getSessionId()}, running with ${history.length} history messages...`);
@@ -386,26 +293,11 @@ sessionRoutes
               }
               break;
             case 'complete':
-              // OODA 循环完成，开始流式发送响应内容
-              // 注意：event.data?.output 包含最终的输出内容
-              const eventData = event.data as { output?: string } | undefined;
-              const output = eventData?.output || '';
-              console.log(`[DEBUG] complete event, output length: ${output.length}, output: ${output.substring(0, 50)}`);
-              detailedLogger.logOODAComplete(sessionId, output, { metadata: oodaMetadata });
-              if (output && output.length > 0) {
-                // 立即开始流式发送完整响应内容
-                const chunks = output.match(/.{1,5}/g) || [output];
-                console.log(`[DEBUG] sending ${chunks.length} content chunks`);
-                for (const chunk of chunks) {
-                  streamedContent += chunk;
-                  await sendEvent('content', { 
-                    content: chunk,
-                    fullContent: streamedContent 
-                  });
-                  // 小延迟模拟流式效果
-                  await new Promise(r => setTimeout(r, 20));
-                }
-              }
+              // OODA 循环完成，内容已在 act 阶段流式发送
+              const eventDataComplete = event.data as { output?: string } | undefined;
+              const outputComplete = eventDataComplete?.output || '';
+              console.log(`[DEBUG] complete event, output length: ${outputComplete.length}`);
+              detailedLogger.logOODAComplete(sessionId, outputComplete, { metadata: oodaMetadata });
               break;
           }
         }, history);
@@ -455,12 +347,10 @@ sessionRoutes
         await sendEvent('result', { content: result.output });
         
         const allMessages = store.messages.findBySessionId(sessionId);
-        broadcastToSession(sessionId, {
-          type: 'session_update',
-          payload: { messages: allMessages },
-        });
+        publishToSession(sessionId, 'session', 'updated', { messages: allMessages });
         
         await stream.writeSSE({
+          event: 'end',
           data: JSON.stringify({ type: 'end', status: 'completed' }),
         });
         

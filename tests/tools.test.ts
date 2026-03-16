@@ -195,14 +195,25 @@ describe('工具注册与执行', () => {
 
   describe('2. 命令执行工具', () => {
     it('run_bash: 应该正确执行命令', async () => {
-      const result = await runBashTool.execute(
-        { command: 'echo Hello' },
-        TEST_CONTEXT
-      );
+      const isWindows = process.platform === 'win32';
+      const testCommand = isWindows ? 'node -e console.log("Hello")' : 'echo Hello';
       
-      // Windows echo 可能会或不会包含引号
-      expect(result.stdout.trim()).toMatch(/Hello|"Hello"/);
-      expect(result.exitCode).toBe(0);
+      try {
+        const result = await runBashTool.execute(
+          { command: testCommand },
+          TEST_CONTEXT
+        );
+        
+        if (isWindows) {
+          expect(result.stdout.trim()).toMatch(/Hello/);
+        } else {
+          expect(result.stdout.trim()).toBe('Hello');
+        }
+        expect(result.exitCode).toBe(0);
+      } catch (error) {
+        console.log('Command execution error:', error);
+        throw error;
+      }
     });
 
     it('run_bash: 应该正确执行简单命令', async () => {

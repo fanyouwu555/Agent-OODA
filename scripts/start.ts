@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { platform } from 'node:os';
 
@@ -7,39 +7,105 @@ const CLEAR_LINE = '\r\x1b[K';
 const GREEN = '\x1b[32m';
 const CYAN = '\x1b[36m';
 const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
 const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
 
-async function waitForPort(port: number, maxWait: number = 10000): Promise<boolean> {
-  const startTime = Date.now();
-  while (Date.now() - startTime < maxWait) {
-    const available = await new Promise<boolean>((resolve) => {
-      const tester = createConnection({ port, host: 'localhost' })
-        .on('error', () => resolve(false))
-        .on('connect', () => {
-          tester.destroy();
-          resolve(true);
-        });
-    });
-    if (available) return true;
-    await new Promise(r => setTimeout(r, 200));
+function openBrowser(url: string): void {
+  console.log(`${CYAN}[Browser] Opening ${url}...${RESET}`);
+  
+  try {
+    if (isWindows) {
+      spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' });
+    } else if (platform() === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' });
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+    }
+  } catch (e) {
+    console.log(`${YELLOW}[Browser] Failed to open browser automatically${RESET}`);
   }
+}
+
+function killProcessOnPort(port: number): boolean {
+  console.log(`${YELLOW}[Port ${port}] Checking for existing process...${RESET}`);
+  
+  try {
+    if (isWindows) {
+      const cmd = `netstat -ano | findstr :${port}`;
+      const result = execSync(cmd, { encoding: 'utf-8', shell: true });
+      
+      const lines = result.trim().split('\n');
+      for (const line of lines) {
+        const match = line.match(/LISTENING\s+(\d+)/);
+        if (match) {
+          const pid = match[1];
+          console.log(`${YELLOW}[Port ${port}] Found process PID: ${pid}, terminating...${RESET}`);
+          try {
+            execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf-8', shell: true });
+            console.log(`${GREEN}[Port ${port}] Process terminated successfully${RESET}`);
+            return true;
+          } catch (e) {
+            console.log(`${YELLOW}[Port ${port}] Failed to terminate process, trying next...${RESET}`);
+          }
+        }
+      }
+    } else {
+      const cmd = `lsof -ti:${port}`;
+      const result = execSync(cmd, { encoding: 'utf-8' });
+      const pids = result.trim().split('\n').filter(p => p);
+      
+      for (const pid of pids) {
+        console.log(`${YELLOW}[Port ${port}] Found process PID: ${pid}, terminating...${RESET}`);
+        try {
+          execSync(`kill -9 ${pid}`, { encoding: 'utf-8' });
+          console.log(`${GREEN}[Port ${port}] Process terminated successfully${RESET}`);
+          return true;
+        } catch (e) {
+          console.log(`${YELLOW}[Port ${port}] Failed to terminate process, trying next...${RESET}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`${CYAN}[Port ${port}] No process found on this port${RESET}`);
+  }
+  
   return false;
 }
 
-async function findAvailablePort(startPort: number, maxAttempts: number = 10): Promise<number> {
-  for (let port = startPort; port < startPort + maxAttempts; port++) {
-    const inUse = await new Promise<boolean>((resolve) => {
-      const tester = createConnection({ port, host: 'localhost' })
-        .on('error', () => resolve(false))
-        .on('connect', () => {
-          tester.destroy();
-          resolve(true);
-        });
-    });
-    if (!inUse) return port;
+async function isPortInUse(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const tester = createConnection({ port, host: 'localhost' })
+      .on('error', () => resolve(false))
+      .on('connect', () => {
+        tester.destroy();
+        resolve(true);
+      });
+  });
+}
+
+async function ensurePortAvailable(port: number, maxRetries: number = 3): Promise<void> {
+  const isInUse = await isPortInUse(port);
+  
+  if (isInUse) {
+    console.log(`${YELLOW}[Port ${port}] Port is in use, attempting to free it...${RESET}`);
+    for (let i = 0; i < maxRetries; i++) {
+      const killed = killProcessOnPort(port);
+      if (killed) {
+        await new Promise(r => setTimeout(r, 1000));
+        
+        const stillInUse = await isPortInUse(port);
+        
+        if (!stillInUse) {
+          console.log(`${GREEN}[Port ${port}] Port is now available${RESET}`);
+          return;
+        }
+      }
+    }
+    throw new Error(`Failed to free port ${port} after ${maxRetries} attempts`);
+  } else {
+    console.log(`${GREEN}[Port ${port}] Port is available${RESET}`);
   }
-  return startPort;
 }
 
 function printBanner(serverPort: number, appPort: number) {
@@ -59,16 +125,30 @@ function printBanner(serverPort: number, appPort: number) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const serverPort = args.includes('--server-port') 
+  const serverPortArg = args.includes('--server-port') 
     ? parseInt(args[args.indexOf('--server-port') + 1]) 
-    : await findAvailablePort(3000);
-  const appPort = args.includes('--app-port')
+    : 3000;
+  const appPortArg = args.includes('--app-port')
     ? parseInt(args[args.indexOf('--app-port') + 1])
-    : 5173;
+    : 5174;
 
   console.log(`${CYAN}[Start] Starting OODA Agent development servers...${RESET}\n`);
 
+  console.log(`${CYAN}[Check] Checking ports availability...${RESET}`);
+  await ensurePortAvailable(serverPortArg);
+  await ensurePortAvailable(appPortArg);
+  console.log();
+
+  const serverPort = serverPortArg;
+  const appPort = appPortArg;
+
   const serverEnv = { ...process.env, PORT: String(serverPort) };
+  
+  const appEnv = { 
+    ...process.env, 
+    VITE_API_PORT: String(serverPort),
+    PORT: String(appPort)
+  };
   
   const server = spawn('npm', ['run', 'dev:server'], {
     cwd: process.cwd(),
@@ -80,11 +160,13 @@ async function main() {
   const app = spawn('npm', ['run', 'dev:app'], {
     cwd: process.cwd(),
     shell: isWindows,
+    env: appEnv,
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
   let serverReady = false;
   let appReady = false;
+  let browserOpened = false;
   let serverOutput = '';
   let appOutput = '';
 
@@ -120,6 +202,13 @@ async function main() {
     if (serverReady && appReady) {
       const actualAppPort = appPort;
       printBanner(serverPort, actualAppPort);
+      
+      if (!browserOpened) {
+        browserOpened = true;
+        setTimeout(() => {
+          openBrowser(`http://localhost:${actualAppPort}`);
+        }, 500);
+      }
     }
   }
 
