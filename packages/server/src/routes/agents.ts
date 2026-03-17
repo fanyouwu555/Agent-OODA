@@ -1,6 +1,7 @@
 // packages/server/src/routes/agents.ts
 import { Hono } from 'hono';
 import type { AgentConfigV2, AgentStatus, AgentInstance, AgentToolConfig, AgentSkillConfig, AgentModelConfigV2 } from '@ooda-agent/core';
+import { CONSTANTS } from '@ooda-agent/core';
 
 const agentRoutes = new Hono();
 
@@ -27,14 +28,14 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       tools: { allowed: ['*'] },
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
-        name: 'moonshot-v1-8k',
-        provider: 'Kimi',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
+        provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
         temperature: 0.7,
         maxTokens: 4000,
       },
       runtime: {
         maxSteps: 50,
-        timeout: 300000,
+        timeout: CONSTANTS.TIMEOUT.AGENT_DEFAULT,
         retryPolicy: {
           maxRetries: 3,
           backoff: 'exponential',
@@ -59,14 +60,14 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       tools: { allowed: ['*'] },
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
-        name: 'moonshot-v1-8k',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
         provider: 'Kimi',
         temperature: 0.3,
         maxTokens: 8000,
       },
       runtime: {
         maxSteps: 100,
-        timeout: 600000,
+        timeout: CONSTANTS.TIMEOUT.AGENT_CODER,
       },
       enabled: true,
     },
@@ -87,7 +88,7 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       tools: { allowed: ['*'] },
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
-        name: 'moonshot-v1-8k',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
         provider: 'Kimi',
         temperature: 0.5,
         maxTokens: 6000,
@@ -115,7 +116,7 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       tools: { allowed: ['*'] },
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
-        name: 'moonshot-v1-8k',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
         provider: 'Kimi',
         temperature: 0.7,
         maxTokens: 6000,
@@ -143,14 +144,14 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       tools: { allowed: ['*'] },
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
-        name: 'moonshot-v1-8k',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
         provider: 'Kimi',
         temperature: 0.4,
         maxTokens: 8000,
       },
       runtime: {
         maxSteps: 100,
-        timeout: 600000,
+        timeout: CONSTANTS.TIMEOUT.AGENT_CODER,
       },
       enabled: true,
     },
@@ -208,7 +209,7 @@ agentRoutes.post('/', async (c) => {
       skills: body.skills || { allowed: [], autoInitialize: true },
       permissions: body.permissions,
       model: body.model || {
-        name: 'moonshot-v1-8k',
+        name: CONSTANTS.LLM.DEFAULT_MODEL,
         provider: 'Kimi',
         temperature: 0.7,
         maxTokens: 4000,

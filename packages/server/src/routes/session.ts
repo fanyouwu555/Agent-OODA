@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager } from '@ooda-agent/core';
+import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS } from '@ooda-agent/core';
 import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import { detailedLogger } from '../utils/detailed-logger';
@@ -76,7 +76,7 @@ export function requestConfirmation(
         detailedLogger.warn('PERMISSION', `Confirmation timeout for ${toolName}`, { confirmationId }, sessionId);
         resolve(false);
       }
-    }, 60000);
+    }, CONSTANTS.TIMEOUT.CONFIRMATION);
   });
 }
 

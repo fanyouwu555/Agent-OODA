@@ -3,6 +3,31 @@ import { PermissionConfig, PermissionMode } from '../permission';
 import { LLMProviderConfig } from '../llm/provider';
 import { EmbeddingConfig } from '../memory/embedding';
 
+// 统一常量配置
+export const CONSTANTS = {
+  TIMEOUT: {
+    CONFIRMATION: parseInt(process.env.CONFIRMATION_TIMEOUT_MS || '60000', 10),
+    AGENT_DEFAULT: parseInt(process.env.AGENT_TIMEOUT_MS || '300000', 10),
+    AGENT_CODER: 600000,
+    AGENT_RESEARCHER: 300000,
+    AGENT_WRITER: 300000,
+    AGENT_ARCHITECT: 600000,
+  },
+  CACHE: {
+    DEFAULT_TTL: 60000,
+    DEFAULT_MAX_SIZE: 100,
+  },
+  HISTORY: {
+    MAX_SIZE: 100,
+    COMPRESS_THRESHOLD: 20,
+    KEEP_RECENT: 10,
+  },
+  LLM: {
+    DEFAULT_MODEL: process.env.DEFAULT_MODEL || 'qwen3:8b',
+    DEFAULT_PROVIDER: process.env.DEFAULT_PROVIDER || 'ollama',
+  },
+} as const;
+
 function resolveEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, envVar) => {
     const envValue = process.env[envVar];

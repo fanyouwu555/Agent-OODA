@@ -225,10 +225,6 @@ async function main() {
   const PORT = await findAvailablePort(Number(process.env.PORT) || 3000);
 
   const server = createServer(async (req, res) => {
-    if (req.url === '/ws' || req.url?.startsWith('/ws?')) {
-      return;
-    }
-    
     const startTime = Date.now();
     const method = req.method || 'GET';
     const url = req.url || '/';
