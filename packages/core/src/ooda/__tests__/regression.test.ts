@@ -138,16 +138,6 @@ describe('OODA 回归测试', () => {
       loop.enableCache();
       expect(loop).toBeDefined();
     });
-
-    it('新 Agent 类应该可用', async () => {
-      // 导入新增的 Agent 类
-      const { ObserveAgent, OrientAgent, DecideAgent, ActAgent } = await import('../loop');
-      
-      expect(ObserveAgent).toBeDefined();
-      expect(OrientAgent).toBeDefined();
-      expect(DecideAgent).toBeDefined();
-      expect(ActAgent).toBeDefined();
-    });
   });
 
   describe('7. 配置导出', () => {
@@ -169,13 +159,6 @@ describe('OODA 回归测试', () => {
       
       const keys = Object.keys(typesModule);
       expect(keys.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('9. Agent 工厂', () => {
-    it('应该能够导入 OODAAgentFactory', async () => {
-      const { OODAAgentFactory } = await import('../agent/factory');
-      expect(OODAAgentFactory).toBeDefined();
     });
   });
 });

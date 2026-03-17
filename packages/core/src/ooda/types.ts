@@ -1,10 +1,38 @@
 // packages/core/src/ooda/types.ts
 // OODA 四代理架构类型定义
 
-import { Message } from '../types';
+import { Message, Observation, Orientation, Decision, ActionResult } from '../types';
 import { PermissionMode } from '../permission';
 
-export * from './loop';
+// OODA 事件类型 - 从 loop.ts 复制以避免循环依赖
+export interface OODAEvent {
+  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete' | 'feedback' | 'adaptation' | 'streaming_content';
+  data?: {
+    intent?: string;
+    reasoning?: string;
+    options?: string[];
+    selectedOption?: string;
+    chunk?: string;
+    output?: string;
+    toolCall?: {
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+      result?: unknown;
+    };
+    feedback?: {
+      observations: string[];
+      issues: string[];
+      suggestions: string[];
+    };
+    adaptation?: {
+      reason: string;
+      action: string;
+    };
+  };
+}
+
+export type OODACallback = (event: OODAEvent) => Promise<void> | void;
 
 export interface AgentModelConfig {
   name: string;
@@ -215,4 +243,90 @@ export interface ActResult {
   };
   evaluation: { targetMet: boolean; confidence: number; reasoning: string };
   feedback: { observations: string[]; suggestions: string[]; issues: string[] };
+}
+
+// =========================================
+// 统一阶段上下文 - 明确阶段间数据传递
+// =========================================
+
+/**
+ * LLM 交互记录
+ */
+export interface LLMInteraction {
+  prompt: string;
+  response: string;
+  tokens: number;
+  duration: number;
+  timestamp: number;
+}
+
+/**
+ * 阶段执行结果 - 统一的阶段输出格式
+ */
+export interface PhaseResult<T> {
+  phase: 'observe' | 'orient' | 'decide' | 'act';
+  success: boolean;
+  data: T;
+  llmInteraction?: LLMInteraction;
+  error?: string;
+  duration: number;
+  timestamp: number;
+}
+
+/**
+ * OODA 循环上下文 - 封装所有阶段数据
+ */
+export interface OODACycleContext {
+  sessionId: string;
+  iteration: number;
+  originalInput: string;
+  
+  // 各阶段结果
+  observe?: PhaseResult<Observation>;
+  orient?: PhaseResult<Orientation>;
+  decide?: PhaseResult<Decision>;
+  act?: PhaseResult<ActionResult>;
+  
+  // 便捷方法
+  getLatestObservation(): Observation | null;
+  getLatestOrientation(): Orientation | null;
+  getLatestDecision(): Decision | null;
+  getLatestActionResult(): ActionResult | null;
+  isComplete(): boolean;
+  getSummary(): string;
+}
+
+/**
+ * 创建 OODA 循环上下文的工厂函数
+ */
+export function createOODACycleContext(sessionId: string, iteration: number, originalInput: string): OODACycleContext {
+  return {
+    sessionId,
+    iteration,
+    originalInput,
+    getLatestObservation() {
+      return this.observe?.data ?? null;
+    },
+    getLatestOrientation() {
+      return this.orient?.data ?? null;
+    },
+    getLatestDecision() {
+      return this.decide?.data ?? null;
+    },
+    getLatestActionResult() {
+      return this.act?.data ?? null;
+    },
+    isComplete() {
+      // Act 阶段成功执行后认为完成
+      return this.act?.success === true;
+    },
+    getSummary() {
+      const parts: string[] = [];
+      if (this.observe) parts.push(`Observe: ${this.observe.success ? '✓' : '✗'}`);
+      if (this.orient) parts.push(`Orient: ${this.orient.success ? '✓' : '✗'}`);
+      if (this.decide) parts.push(`Decide: ${this.decide.success ? '✓' : '✗'}`);
+      if (this.act) parts.push(`Act: ${this.act.success ? '✓' : '✗'}`);
+      return parts.join(' → ');
+    }
+  };
 }

@@ -469,13 +469,6 @@ export class Actor {
     return { observations, newInformation };
   }
 
-  /**
-   * 启发式进度反馈 - 评估任务整体进度
-   */
-  private generateProgressFeedback(decision: Decision): string | null {
-    return null;
-  }
-
   private isErrorResult(result: unknown): boolean {
     if (result && typeof result === 'object') {
       const r = result as Record<string, unknown>;

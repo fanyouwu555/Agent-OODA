@@ -1,15 +1,30 @@
 import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult } from '../types';
-import { Observer, resetObserverState, initObserverLastStoredCount } from './observe';
+import { Observer, resetObserverState, initObserverLastStoredCount, ObserveAgent } from './observe';
 import { Orienter, resetOrienterState, initOrienterCompressedCount, OrientThinkingCallback } from './orient';
 import { Decider, DecideThinkingCallback } from './decide';
 import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
+import { OODACycleContext, createOODACycleContext, PhaseResult, LLMInteraction } from './types';
 
 export { ObserveAgent } from './observe';
-export { OrientAgent } from './agent/orient';
-export { DecideAgent } from './agent/decide';
-export { ActAgent } from './agent/act';
+
+/**
+ * Debug 日志辅助函数 - 安全地打印 JSON
+ */
+function debugJson(label: string, data: unknown): void {
+  try {
+    const json = JSON.stringify(data, null, 2);
+    // 如果太长，截断显示
+    if (json.length > 5000) {
+      console.log(`[DEBUG ${label}]`, json.slice(0, 5000), '\n... [truncated]');
+    } else {
+      console.log(`[DEBUG ${label}]`, json);
+    }
+  } catch (e) {
+    console.log(`[DEBUG ${label}] [Serialization failed]`, String(e));
+  }
+}
 
 type ThinkingCallback = (phase: 'orient' | 'decide', type: string, content: string) => void | Promise<void>;
 
@@ -57,6 +72,14 @@ export interface OODAEvent {
     adaptation?: {
       reason: string;
       action: string;
+    };
+    // 增强：每个阶段的完整输入输出
+    phaseData?: {
+      phaseName: 'observe' | 'orient' | 'decide' | 'act';
+      input: Record<string, unknown>;
+      output: Record<string, unknown>;
+      duration: number;
+      success: boolean;
     };
   };
 }
@@ -244,20 +267,77 @@ export class OODALoop {
       totalTime: 0,
     };
     
+    // 创建本轮 OODA 循环上下文
+    const cycleContext = createOODACycleContext(this.sessionId, this.currentIteration, state.originalInput);
+    
+    // ========== 阶段 1: Observe ==========
     let observeStart = Date.now();
     const observeEvent = { phase: 'observe' as const };
     await callback(observeEvent);
     await this.streamingManager?.handleOODAEvent(observeEvent);
     console.log('[OODA] Getting observation...');
-    const observation = await this.getCachedObservation(state);
-    this.enrichObservationWithContext(observation);
-    console.log('[OODA] Observation complete');
-    metrics.observeTime = Date.now() - observeStart;
     
+    const observation = await this.getCachedObservation(state);
+    const observeDuration = Date.now() - observeStart;
+    
+    // 记录 Observe 阶段结果
+    const observeResult: PhaseResult<Observation> = {
+      phase: 'observe',
+      success: true,
+      data: observation,
+      duration: observeDuration,
+      timestamp: Date.now(),
+    };
+    cycleContext.observe = observeResult;
+    console.log('[OODA] Observation complete');
+    
+    // 推送 Observe 阶段完整数据到前端
+    await callback({
+      phase: 'observe',
+      data: {
+        phaseData: {
+          phaseName: 'observe',
+          input: {
+            originalInput: state.originalInput,
+            historyCount: state.history.length,
+            toolResults: observation.toolResults?.slice(0, 5),
+            anomalies: observation.anomalies,
+            patterns: observation.patterns?.slice(0, 5),
+          },
+          output: {
+            userInput: observation.userInput,
+            toolResults: observation.toolResults,
+            context: observation.context,
+            environment: observation.environment,
+            anomalies: observation.anomalies,
+            patterns: observation.patterns,
+          },
+          duration: observeDuration,
+          success: true,
+        },
+      },
+    });
+    
+    // ========== Debug: 打印 Observe 阶段的完整上下文 ==========
+    debugJson('OBSERVE-INPUT', {
+      originalInput: state.originalInput,
+      historyCount: state.history.length,
+      toolResults: observation.toolResults?.slice(0, 5),
+      anomalies: observation.anomalies,
+      patterns: observation.patterns?.slice(0, 5),
+      environment: observation.environment,
+    });
+    debugJson('OBSERVE-OUTPUT', observation);
+    
+    metrics.observeTime = observeDuration;
+    
+    // ========== 阶段 2: Orient ==========
     let orientStart = Date.now();
     console.log('[OODA] Getting orientation...');
     
     let orientation: Orientation;
+    let orientLLMInteraction: LLMInteraction | undefined;
+    
     if (this.thinkingCallback) {
       const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
         await this.thinkingCallback!('orient', type, content);
@@ -266,7 +346,66 @@ export class OODALoop {
     } else {
       orientation = await this.getCachedOrientation(observation);
     }
+    
+    const orientDuration = Date.now() - orientStart;
+    
+    // 记录 Orient 阶段结果（包含 LLM 交互信息）
+    const orientResult: PhaseResult<Orientation> = {
+      phase: 'orient',
+      success: true,
+      data: orientation,
+      llmInteraction: orientLLMInteraction,
+      duration: orientDuration,
+      timestamp: Date.now(),
+    };
+    cycleContext.orient = orientResult;
     console.log('[OODA] Orientation complete:', orientation.primaryIntent.type);
+    
+    // 推送 Orient 阶段完整数据到前端
+    await callback({
+      phase: 'orient',
+      data: {
+        phaseData: {
+          phaseName: 'orient',
+          input: {
+            userInput: observation.userInput,
+            toolResults: observation.toolResults,
+            anomalies: observation.anomalies,
+            patterns: observation.patterns,
+          },
+          output: {
+            primaryIntent: orientation.primaryIntent,
+            constraints: orientation.constraints,
+            knowledgeGaps: orientation.knowledgeGaps,
+            patterns: orientation.patterns,
+            relationships: orientation.relationships,
+            assumptions: orientation.assumptions,
+            risks: orientation.risks,
+            relevantContext: orientation.relevantContext,
+          },
+          duration: orientDuration,
+          success: true,
+        },
+      },
+    });
+    
+    // ========== Debug: 打印 Orient 阶段的完整上下文 ==========
+    debugJson('ORIENT-INPUT', {
+      userInput: observation.userInput,
+      toolResults: observation.toolResults,
+      anomalies: observation.anomalies,
+      patterns: observation.patterns,
+    });
+    debugJson('ORIENT-OUTPUT', {
+      primaryIntent: orientation.primaryIntent,
+      constraints: orientation.constraints,
+      knowledgeGaps: orientation.knowledgeGaps,
+      patterns: orientation.patterns,
+      relationships: orientation.relationships,
+      assumptions: orientation.assumptions,
+      risks: orientation.risks,
+      relevantContext: orientation.relevantContext,
+    });
     
     this.loopContext.conversationSummary = orientation.relevantContext?.contextSummary;
     
@@ -278,12 +417,15 @@ export class OODALoop {
     };
     await callback(orientEvent);
     await this.streamingManager?.handleOODAEvent(orientEvent);
-    metrics.orientTime = Date.now() - orientStart;
+    metrics.orientTime = orientDuration;
     
+    // ========== 阶段 3: Decide ==========
     let decideStart = Date.now();
     console.log('[OODA] Getting decision...');
     
     let decision: Decision;
+    let decideLLMInteraction: LLMInteraction | undefined;
+    
     if (this.thinkingCallback) {
       const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
         await this.thinkingCallback!('decide', type, content);
@@ -292,7 +434,84 @@ export class OODALoop {
     } else {
       decision = await this.getCachedDecision(orientation);
     }
+    
+    const decideDuration = Date.now() - decideStart;
+    
+    // 记录 Decide 阶段结果
+    const decideResult: PhaseResult<Decision> = {
+      phase: 'decide',
+      success: true,
+      data: decision,
+      llmInteraction: decideLLMInteraction,
+      duration: decideDuration,
+      timestamp: Date.now(),
+    };
+    cycleContext.decide = decideResult;
     console.log('[OODA] Decision complete:', decision.nextAction.type);
+    
+    // 推送 Decide 阶段完整数据到前端
+    await callback({
+      phase: 'decide',
+      data: {
+        phaseData: {
+          phaseName: 'decide',
+          input: {
+            primaryIntent: orientation.primaryIntent,
+            constraints: orientation.constraints,
+            knowledgeGaps: orientation.knowledgeGaps,
+            patterns: orientation.patterns,
+            risks: orientation.risks,
+          },
+          output: {
+            problemStatement: decision.problemStatement,
+            options: decision.options.map(o => ({
+              id: o.id,
+              description: o.description,
+              approach: o.approach,
+              pros: o.pros,
+              cons: o.cons,
+              estimatedComplexity: o.estimatedComplexity,
+              riskLevel: o.riskLevel,
+              score: o.score,
+            })),
+            selectedOption: decision.selectedOption,
+            plan: decision.plan,
+            nextAction: decision.nextAction,
+            reasoning: decision.reasoning,
+            riskAssessment: decision.riskAssessment,
+          },
+          duration: decideDuration,
+          success: true,
+        },
+      },
+    });
+    
+    // ========== Debug: 打印 Decide 阶段的完整上下文 ==========
+    debugJson('DECIDE-INPUT', {
+      primaryIntent: orientation.primaryIntent,
+      constraints: orientation.constraints,
+      knowledgeGaps: orientation.knowledgeGaps,
+      patterns: orientation.patterns,
+      risks: orientation.risks,
+    });
+    debugJson('DECIDE-OUTPUT', {
+      problemStatement: decision.problemStatement,
+      options: decision.options.map(o => ({
+        id: o.id,
+        description: o.description,
+        approach: o.approach,
+        pros: o.pros,
+        cons: o.cons,
+        estimatedComplexity: o.estimatedComplexity,
+        riskLevel: o.riskLevel,
+        score: o.score,
+      })),
+      selectedOption: decision.selectedOption,
+      plan: decision.plan,
+      nextAction: decision.nextAction,
+      reasoning: decision.reasoning,
+      riskAssessment: decision.riskAssessment,
+    });
     
     const decideEvent = { 
       phase: 'decide' as const, 
@@ -304,8 +523,9 @@ export class OODALoop {
     };
     await callback(decideEvent);
     await this.streamingManager?.handleOODAEvent(decideEvent);
-    metrics.decideTime = Date.now() - decideStart;
+    metrics.decideTime = decideDuration;
     
+    // ========== 阶段 4: Act ==========
     let actStart = Date.now();
     const actEvent = { phase: 'act' as const };
     await callback(actEvent);
@@ -326,6 +546,14 @@ export class OODALoop {
       await this.streamingManager?.handleOODAEvent(toolCallEvent);
     }
     
+    let actionResult: ActionResult;
+    
+    // ========== Debug: 打印 Act 阶段的输入 ==========
+    debugJson('ACT-INPUT', {
+      nextAction: decision.nextAction,
+      selectedOption: decision.selectedOption,
+    });
+    
     // 如果是响应类型且设置了流式回调，使用流式生成
     if (decision.nextAction.type === 'response' && this.streamContentCallback) {
       const action = decision.nextAction;
@@ -338,7 +566,7 @@ export class OODALoop {
         await this.streamContentCallback(chunk, i + chunkSize >= content.length);
       }
       
-      const actionResult = {
+      actionResult = {
         success: true,
         result: { type: 'response', content },
         feedback: {
@@ -348,34 +576,56 @@ export class OODALoop {
           suggestions: [] as string[],
         },
         sideEffects: [],
-        executionTime: Date.now() - actStart,
       };
-      
-      this.loopContext.previousResults.push(actionResult);
-      
-      metrics.actTime = Date.now() - actStart;
-      metrics.totalTime = Date.now() - cycleStartTime;
-      this.performanceMetrics.push(metrics);
-      
-      return {
-        ...state,
-        currentStep: state.currentStep + 1,
-        isComplete: true,
-        history: [...state.history, {
-          id: `msg-${Date.now()}`,
-          role: 'assistant',
-          content: content,
-          timestamp: Date.now(),
-        }],
-        result: {
-          output: content,
-          steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
-          metadata: { actionResult },
-        },
-      };
+    } else {
+      actionResult = await this.actor.act(decision);
     }
     
-    const actionResult = await this.actor.act(decision);
+    const actDuration = Date.now() - actStart;
+    
+    // 记录 Act 阶段结果到上下文
+    const actResult: PhaseResult<ActionResult> = {
+      phase: 'act',
+      success: actionResult.success,
+      data: actionResult,
+      duration: actDuration,
+      timestamp: Date.now(),
+    };
+    cycleContext.act = actResult;
+    
+    // 推送 Act 阶段完整数据到前端
+    await callback({
+      phase: 'act',
+      data: {
+        phaseData: {
+          phaseName: 'act',
+          input: {
+            nextAction: decision.nextAction,
+            selectedOption: decision.selectedOption,
+          },
+          output: {
+            success: actionResult.success,
+            result: actionResult.result,
+            feedback: actionResult.feedback,
+            sideEffects: actionResult.sideEffects,
+          },
+          duration: actDuration,
+          success: actionResult.success,
+        },
+      },
+    });
+    
+    // ========== Debug: 打印 Act 阶段的输出 ==========
+    debugJson('ACT-OUTPUT', {
+      success: actionResult.success,
+      result: actionResult.result,
+      feedback: actionResult.feedback,
+      sideEffects: actionResult.sideEffects,
+    });
+    
+    // 打印阶段摘要
+    console.log(`[OODA] Cycle ${this.currentIteration} complete: ${cycleContext.getSummary()}`);
+    
     this.loopContext.previousResults.push(actionResult);
     
     if (actionResult.feedback.issues.length > 0 || actionResult.feedback.suggestions.length > 0) {
@@ -408,11 +658,11 @@ export class OODALoop {
       await callback(toolResultEvent);
       await this.streamingManager?.handleOODAEvent(toolResultEvent);
     }
-    metrics.actTime = Date.now() - actStart;
+    metrics.actTime = actDuration;
     metrics.totalTime = Date.now() - cycleStartTime;
     this.performanceMetrics.push(metrics);
     
-    const isComplete = decision.nextAction.type === 'response' || actionResult.success;
+    const isComplete = cycleContext.isComplete();
     
     return {
       ...state,
@@ -427,7 +677,7 @@ export class OODALoop {
       result: isComplete ? {
         output: actionResult.feedback.observations.join('\n'),
         steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
-        metadata: { actionResult },
+        metadata: { actionResult, cycleContext },
       } : state.result,
     };
   }
@@ -476,10 +726,6 @@ export class OODALoop {
 
   private generateCacheKey(state: AgentState): string {
     return `${state.originalInput}:${state.history.length}`;
-  }
-
-  private enrichObservationWithContext(observation: Observation): void {
-    // 可扩展：在观察阶段添加额外上下文
   }
 
   private optimizeHistory(state: AgentState): AgentState {
