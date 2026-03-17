@@ -92,18 +92,7 @@ export interface OODAAgentConfig {
     available?: string[];
     configs?: Record<string, AgentConfig>;
   };
-  tools?: Record<string, {
-    description: string;
-    parameters: Record<string, unknown>;
-    handler: string;
-  }>;
-  mcp?: {
-    servers?: Record<string, {
-      command: string;
-      args?: string[];
-      env?: Record<string, string>;
-    }>;
-  };
+  // tools 和 mcp 配置已移除 - 工具直接注册到注册表
   embedding?: {
     provider?: 'ollama' | 'openai-compatible';
     model?: string;
@@ -213,10 +202,6 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
         }
       }
     }
-  },
-  tools: {},
-  mcp: {
-    servers: {}
   }
 };
 
@@ -372,12 +357,16 @@ export class ConfigManager {
     return this.config.agent?.available || ['build', 'plan', 'general', 'explore'];
   }
   
-  getToolConfig(toolName: string): { description: string; parameters: Record<string, unknown>; handler: string } | undefined {
-    return this.config.tools?.[toolName];
+  // 工具配置已移除 - 工具直接注册到 ToolRegistry
+  // @deprecated 此方法不再使用
+  getToolConfig(_toolName: string): undefined {
+    return undefined;
   }
   
-  getMCPServers(): Record<string, { command: string; args?: string[]; env?: Record<string, string> }> {
-    return this.config.mcp?.servers || {};
+  // MCP 配置已移除 - 外部 MCP 服务器不再支持
+  // @deprecated 此方法不再使用  
+  getMCPServers(): Record<string, never> {
+    return {};
   }
   
   getEmbeddingConfig(): { provider: 'ollama' | 'openai-compatible'; model: string; baseUrl?: string; apiKey?: string; dimensions?: number } | null {

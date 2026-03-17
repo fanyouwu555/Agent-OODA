@@ -9,6 +9,7 @@ export * from './llm/provider';
 export * from './llm/service';
 export * from './memory';
 export * from './config';
+export { validateEnvironment, logValidationResult, ENV_SCHEMA } from './config/validator';
 export * from './skill/interface';
 export * from './skill/registry';
 export * from './mcp/message';

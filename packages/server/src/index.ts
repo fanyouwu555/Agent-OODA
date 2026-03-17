@@ -18,7 +18,7 @@ import { requestLogger } from './middleware/logger';
 import { logger } from './utils/logger';
 import { detailedLogger } from './utils/detailed-logger';
 import { initializeSkills } from '@ooda-agent/tools';
-import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager } from '@ooda-agent/core';
+import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
 import { createStorage } from '@ooda-agent/storage';
 import { createServer } from 'node:http';
@@ -113,6 +113,14 @@ async function loadConfig() {
 }
 
 async function main() {
+  // 校验环境变量
+  const validation = validateEnvironment();
+  logValidationResult(validation);
+  if (!validation.valid) {
+    console.error('[Config] 环境变量校验失败，服务器无法启动');
+    process.exit(1);
+  }
+  
   const appConfig = await loadConfig();
   if (appConfig) {
     initializeConfigManager(appConfig);

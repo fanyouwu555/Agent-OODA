@@ -56,58 +56,6 @@
         "pdf_processing": "ask",
         "code_analysis": "allow"
       }
-    },
-    "groups": {
-      "readonly": {
-        "read": "allow",
-        "grep": "allow",
-        "glob": "allow",
-        "list": "allow"
-      },
-      "dangerous": {
-        "bash": "deny",
-        "write": "ask"
-      }
-    }
-  },
-
-  "tools": {
-    "groups": {
-      "filesystem": {
-        "name": "filesystem",
-        "displayName": "文件系统",
-        "tools": ["read", "write", "edit", "list", "glob"]
-      },
-      "search": {
-        "name": "search",
-        "displayName": "搜索工具",
-        "tools": ["grep", "glob"]
-      },
-      "network": {
-        "name": "network",
-        "displayName": "网络工具",
-        "tools": ["webfetch"]
-      },
-      "mcp": {
-        "name": "mcp",
-        "displayName": "MCP 工具",
-        "tools": ["context7", "grep_app", "web_search", "web_fetch"]
-      }
-    }
-  },
-
-  "skills": {
-    "groups": {
-      "data": {
-        "name": "data",
-        "displayName": "数据处理",
-        "skills": ["data_analysis", "database_query"]
-      },
-      "media": {
-        "name": "media",
-        "displayName": "媒体处理",
-        "skills": ["image_processing", "pdf_processing"]
-      }
     }
   },
 
@@ -156,25 +104,11 @@
         },
         "systemPrompt": "你是一个专业的代码编写助手，擅长编写高质量、可维护的代码。你应该遵循最佳实践，编写清晰、简洁的代码。",
         "tools": {
-          "allowed": ["read", "write", "edit", "bash", "grep", "glob", "list"],
-          "groups": ["filesystem", "search"]
+          "allowed": ["read", "write", "edit", "bash", "grep", "glob", "list"]
         },
         "skills": {
           "allowed": ["code_analysis"],
           "autoInitialize": ["code_analysis"]
-        },
-        "permissions": {
-          "inherit": true,
-          "tools": {
-            "bash": "ask",
-            "write": "ask"
-          },
-          "patterns": [
-            {
-              "pattern": "bash:rm*",
-              "mode": "deny"
-            }
-          ]
         },
         "model": {
           "temperature": 0.7,
@@ -205,8 +139,7 @@
         },
         "systemPrompt": "你是一个任务规划专家，擅长分析需求并制定详细的执行计划。你应该考虑各种可能的情况，制定周全的计划。",
         "tools": {
-          "allowed": ["read", "grep", "glob", "list"],
-          "groups": ["readonly"]
+          "allowed": ["read", "grep", "glob", "list"]
         },
         "permissions": {
           "inherit": false,
@@ -234,8 +167,7 @@
         },
         "systemPrompt": "你是一个通用的AI助手，可以处理各种任务。你应该根据用户的需求，提供准确、有用的回答。",
         "tools": {
-          "allowed": ["read", "write", "edit", "bash", "grep", "glob", "list", "webfetch"],
-          "groups": ["filesystem", "search", "network"]
+          "allowed": ["read", "write", "edit", "bash", "grep", "glob", "list", "webfetch"]
         },
         "permissions": {
           "inherit": true
@@ -257,8 +189,7 @@
         },
         "systemPrompt": "你是一个代码探索专家，擅长分析代码结构和理解项目。你应该帮助用户快速理解代码库的结构和功能。",
         "tools": {
-          "allowed": ["read", "grep", "glob", "list"],
-          "groups": ["search"]
+          "allowed": ["read", "grep", "glob", "list"]
         },
         "permissions": {
           "inherit": false,
@@ -269,77 +200,6 @@
             "list": "allow"
           }
         }
-      },
-      
-      "security": {
-        "name": "security",
-        "displayName": "安全审计",
-        "description": "代码安全审计专家，专注于发现和修复安全漏洞",
-        "metadata": {
-          "icon": "🔒",
-          "tags": ["security", "audit", "vulnerability"],
-          "version": "1.0.0"
-        },
-        "systemPrompt": "你是一个安全审计专家，专注于发现和修复代码中的安全漏洞。你应该识别潜在的安全风险并提供修复建议。",
-        "tools": {
-          "allowed": ["read", "grep", "glob", "list", "bash"],
-          "denied": ["write", "edit"]
-        },
-        "skills": {
-          "allowed": ["code_analysis", "api_test"],
-          "autoInitialize": true
-        },
-        "permissions": {
-          "inherit": true,
-          "tools": {
-            "write": "deny",
-            "edit": "deny",
-            "bash": "ask"
-          },
-          "patterns": [
-            {
-              "pattern": "bash:*",
-              "mode": "ask",
-              "conditions": [
-                { "type": "command", "operator": "contains", "value": "rm" }
-              ]
-            }
-          ]
-        },
-        "model": {
-          "temperature": 0.3,
-          "maxTokens": 3000
-        }
-      }
-    }
-  },
-
-  "mcp": {
-    "servers": {
-      "filesystem": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"],
-        "env": {
-          "NODE_ENV": "production"
-        }
-      },
-      "context7": {
-        "command": "npx",
-        "args": ["-y", "@upstash/context7-mcp"],
-        "description": "Context7 - 获取最新的库文档和代码示例",
-        "env": {}
-      },
-      "grep_app": {
-        "url": "http://localhost:8603/mcp",
-        "description": "GrepApp - GitHub 代码搜索"
-      },
-      "websearch": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-        "env": {
-          "BRAVE_API_KEY": "${BRAVE_API_KEY}"
-        },
-        "description": "WebSearch - 网络搜索"
       }
     }
   }

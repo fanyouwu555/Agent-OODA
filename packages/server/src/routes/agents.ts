@@ -1,17 +1,25 @@
 // packages/server/src/routes/agents.ts
 import { Hono } from 'hono';
 import type { AgentConfigV2, AgentStatus, AgentInstance, AgentToolConfig, AgentSkillConfig, AgentModelConfigV2 } from '@ooda-agent/core';
-import { CONSTANTS } from '@ooda-agent/core';
+import { CONSTANTS, getAgentRegistry, initializeAgentRegistry, createAgentRegistry } from '@ooda-agent/core';
 
 const agentRoutes = new Hono();
 
-// 内存存储的 Agent 配置
-let agents: Map<string, AgentInstance> = new Map();
-let defaultAgent: string = 'default';
+// 初始化 AgentRegistry
+const agentRegistry = getAgentRegistry();
 
-const DEFAULT_AGENTS: AgentInstance[] = [
-  {
-    config: {
+// 初始化默认 Agent（如果没有的话）
+function initializeDefaultAgents() {
+  const registry = getAgentRegistry();
+  
+  // 检查是否已经有 Agent
+  if (registry.list().length > 0) {
+    return;
+  }
+  
+  // 注册默认 Agent
+  const defaultAgents: AgentConfigV2[] = [
+    {
       name: 'default',
       displayName: 'Default Agent',
       description: 'Default OODA Agent with full capabilities',
@@ -43,11 +51,7 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       },
       enabled: true,
     },
-    status: 'idle',
-    usageCount: 0,
-  },
-  {
-    config: {
+    {
       name: 'coder',
       displayName: 'Code Expert',
       description: 'Specialized in code analysis and generation',
@@ -61,7 +65,7 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
         name: CONSTANTS.LLM.DEFAULT_MODEL,
-        provider: 'Kimi',
+        provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
         temperature: 0.3,
         maxTokens: 8000,
       },
@@ -71,11 +75,7 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       },
       enabled: true,
     },
-    status: 'idle',
-    usageCount: 0,
-  },
-  {
-    config: {
+    {
       name: 'researcher',
       displayName: 'Research Assistant',
       description: 'Helps with research, analysis and information gathering',
@@ -89,21 +89,17 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
         name: CONSTANTS.LLM.DEFAULT_MODEL,
-        provider: 'Kimi',
+        provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
         temperature: 0.5,
         maxTokens: 6000,
       },
       runtime: {
         maxSteps: 80,
-        timeout: 300000,
+        timeout: CONSTANTS.TIMEOUT.AGENT_RESEARCHER,
       },
       enabled: true,
     },
-    status: 'idle',
-    usageCount: 0,
-  },
-  {
-    config: {
+    {
       name: 'writer',
       displayName: 'Content Writer',
       description: 'Specialized in writing, editing and creative content',
@@ -117,21 +113,17 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
         name: CONSTANTS.LLM.DEFAULT_MODEL,
-        provider: 'Kimi',
+        provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
         temperature: 0.7,
         maxTokens: 6000,
       },
       runtime: {
         maxSteps: 60,
-        timeout: 300000,
+        timeout: CONSTANTS.TIMEOUT.AGENT_WRITER,
       },
       enabled: true,
     },
-    status: 'idle',
-    usageCount: 0,
-  },
-  {
-    config: {
+    {
       name: 'architect',
       displayName: 'System Architect',
       description: 'Helps design system architecture and technical solutions',
@@ -145,37 +137,47 @@ const DEFAULT_AGENTS: AgentInstance[] = [
       skills: { allowed: ['*'], autoInitialize: true },
       model: {
         name: CONSTANTS.LLM.DEFAULT_MODEL,
-        provider: 'Kimi',
+        provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
         temperature: 0.4,
         maxTokens: 8000,
       },
       runtime: {
         maxSteps: 100,
-        timeout: CONSTANTS.TIMEOUT.AGENT_CODER,
+        timeout: CONSTANTS.TIMEOUT.AGENT_ARCHITECT,
       },
       enabled: true,
     },
-    status: 'idle',
-    usageCount: 0,
-  },
-];
+  ];
+  
+  // 注册所有默认 Agent
+  for (const agent of defaultAgents) {
+    try {
+      registry.register(agent);
+    } catch (e) {
+      // Agent 已存在，跳过
+    }
+  }
+}
 
 // 初始化默认 Agent
-DEFAULT_AGENTS.forEach(agent => agents.set(agent.config.name, agent));
+initializeDefaultAgents();
+
+// 当前默认 Agent
+let defaultAgentName: string = 'default';
 
 // GET /api/agents - 获取所有 Agent
 agentRoutes.get('/', async (c) => {
-  const agentList = Array.from(agents.values());
+  const agentList = agentRegistry.list();
   return c.json({
     agents: agentList,
-    default: defaultAgent,
+    default: defaultAgentName,
   });
 });
 
 // GET /api/agents/:name - 获取单个 Agent
 agentRoutes.get('/:name', async (c) => {
   const name = c.req.param('name');
-  const agent = agents.get(name);
+  const agent = agentRegistry.get(name);
   
   if (!agent) {
     return c.json({ error: 'Agent not found' }, 404);
@@ -192,49 +194,46 @@ agentRoutes.post('/', async (c) => {
     return c.json({ error: 'name, description, and systemPrompt are required' }, 400);
   }
   
-  if (agents.has(body.name)) {
+  if (agentRegistry.get(body.name)) {
     return c.json({ error: 'Agent already exists' }, 409);
   }
   
-  const newAgent: AgentInstance = {
-    config: {
-      name: body.name,
-      displayName: body.displayName || body.name,
-      description: body.description,
-      metadata: body.metadata || {},
-      triggers: body.triggers || {},
-      systemPrompt: body.systemPrompt,
-      systemPromptFile: body.systemPromptFile,
-      tools: body.tools || { allowed: [] },
-      skills: body.skills || { allowed: [], autoInitialize: true },
-      permissions: body.permissions,
-      model: body.model || {
-        name: CONSTANTS.LLM.DEFAULT_MODEL,
-        provider: 'Kimi',
-        temperature: 0.7,
-        maxTokens: 4000,
-      },
-      mcpServers: body.mcpServers,
-      extends: body.extends,
-      runtime: body.runtime || {
-        maxSteps: 50,
-        timeout: 300000,
-      },
-      enabled: body.enabled !== false,
+  const newConfig: AgentConfigV2 = {
+    name: body.name,
+    displayName: body.displayName || body.name,
+    description: body.description,
+    metadata: body.metadata || {},
+    triggers: body.triggers || {},
+    systemPrompt: body.systemPrompt,
+    systemPromptFile: body.systemPromptFile,
+    tools: body.tools || { allowed: [] },
+    skills: body.skills || { allowed: [], autoInitialize: true },
+    permissions: body.permissions,
+    model: body.model || {
+      name: CONSTANTS.LLM.DEFAULT_MODEL,
+      provider: CONSTANTS.LLM.DEFAULT_PROVIDER,
+      temperature: 0.7,
+      maxTokens: 4000,
     },
-    status: 'idle',
-    usageCount: 0,
+    mcpServers: body.mcpServers,
+    extends: body.extends,
+    runtime: body.runtime || {
+      maxSteps: 50,
+      timeout: CONSTANTS.TIMEOUT.AGENT_DEFAULT,
+    },
+    enabled: body.enabled !== false,
   };
   
-  agents.set(body.name, newAgent);
+  agentRegistry.register(newConfig);
   
-  return c.json(newAgent, 201);
+  const agent = agentRegistry.get(body.name);
+  return c.json(agent, 201);
 });
 
 // PATCH /api/agents/:name - 更新 Agent
 agentRoutes.patch('/:name', async (c) => {
   const name = c.req.param('name');
-  const agent = agents.get(name);
+  const agent = agentRegistry.get(name);
   
   if (!agent) {
     return c.json({ error: 'Agent not found' }, 404);
@@ -243,22 +242,17 @@ agentRoutes.patch('/:name', async (c) => {
   const body = await c.req.json();
   
   // 更新配置
-  agent.config = {
-    ...agent.config,
-    ...body,
-    name: name, // 保持 name 不变
-  };
+  agentRegistry.updateConfig(name, body);
   
-  agents.set(name, agent);
-  
-  return c.json(agent);
+  const updatedAgent = agentRegistry.get(name);
+  return c.json(updatedAgent);
 });
 
 // DELETE /api/agents/:name - 删除 Agent
 agentRoutes.delete('/:name', async (c) => {
   const name = c.req.param('name');
   
-  if (!agents.has(name)) {
+  if (!agentRegistry.get(name)) {
     return c.json({ error: 'Agent not found' }, 404);
   }
   
@@ -266,11 +260,11 @@ agentRoutes.delete('/:name', async (c) => {
     return c.json({ error: 'Cannot delete default agent' }, 400);
   }
   
-  agents.delete(name);
+  agentRegistry.unregister(name);
   
   // 如果删除的是默认 Agent，重置为 default
-  if (defaultAgent === name) {
-    defaultAgent = 'default';
+  if (defaultAgentName === name) {
+    defaultAgentName = 'default';
   }
   
   return c.json({ success: true });
@@ -279,33 +273,31 @@ agentRoutes.delete('/:name', async (c) => {
 // POST /api/agents/:name/enable - 启用 Agent
 agentRoutes.post('/:name/enable', async (c) => {
   const name = c.req.param('name');
-  const agent = agents.get(name);
+  const agent = agentRegistry.get(name);
   
   if (!agent) {
     return c.json({ error: 'Agent not found' }, 404);
   }
   
-  agent.config.enabled = true;
-  agent.status = 'idle';
-  agents.set(name, agent);
+  agentRegistry.enable(name);
   
-  return c.json(agent);
+  const updatedAgent = agentRegistry.get(name);
+  return c.json(updatedAgent);
 });
 
 // POST /api/agents/:name/disable - 禁用 Agent
 agentRoutes.post('/:name/disable', async (c) => {
   const name = c.req.param('name');
-  const agent = agents.get(name);
+  const agent = agentRegistry.get(name);
   
   if (!agent) {
     return c.json({ error: 'Agent not found' }, 404);
   }
   
-  agent.config.enabled = false;
-  agent.status = 'disabled';
-  agents.set(name, agent);
+  agentRegistry.disable(name);
   
-  return c.json(agent);
+  const updatedAgent = agentRegistry.get(name);
+  return c.json(updatedAgent);
 });
 
 // POST /api/agents/default - 设置默认 Agent
@@ -317,7 +309,7 @@ agentRoutes.post('/default', async (c) => {
     return c.json({ error: 'name is required' }, 400);
   }
   
-  const agent = agents.get(name);
+  const agent = agentRegistry.get(name);
   if (!agent) {
     return c.json({ error: 'Agent not found' }, 404);
   }
@@ -326,7 +318,7 @@ agentRoutes.post('/default', async (c) => {
     return c.json({ error: 'Cannot set disabled agent as default' }, 400);
   }
   
-  defaultAgent = name;
+  defaultAgentName = name;
   
   return c.json({ success: true });
 });
