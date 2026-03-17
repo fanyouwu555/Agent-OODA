@@ -1,5 +1,5 @@
 // packages/core/src/ooda/observe.ts
-import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, Anomaly, Pattern } from '../types';
+import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, Anomaly, Pattern, ProactiveExploration, ProjectStructure, DependencyInfo, GitStatus } from '../types';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { BaseOODAAgent, AgentDependencies } from './agent/base';
 import { OODAAgentConfig, AgentInput, AgentOutput, ObserveResult } from './types';
@@ -58,11 +58,13 @@ export class Observer {
   private sessionId: string;
   private sessionMemory: SessionMemory;
   private state: ObserverState;
+  private enableProactiveExploration: boolean = false;
   
-  constructor(sessionId: string) {
+  constructor(sessionId: string, enableProactiveExploration: boolean = false) {
     this.sessionId = sessionId;
     this.sessionMemory = getSessionMemory(sessionId);
     this.state = observerStateManager.getState(sessionId);
+    this.enableProactiveExploration = enableProactiveExploration;
   }
   
   async observe(state: AgentState): Promise<Observation> {
@@ -559,11 +561,135 @@ export class Observer {
   }
 
   private async getEnvironmentState(): Promise<EnvironmentState> {
-    return {
+    const baseState: EnvironmentState = {
       currentTime: Date.now(),
       availableTools: this.getAvailableTools(),
       resourceUsage: await this.getResourceUsage(),
     };
+    
+    // 扩展：主动探索环境信息
+    if (this.enableProactiveExploration) {
+      const exploration = await this.performProactiveExploration();
+      // 将探索结果添加到环境状态中
+      (baseState as any).proactiveExploration = exploration;
+    }
+    
+    return baseState;
+  }
+  
+  /**
+   * 主动探索环境信息
+   * 在需要更多上下文时调用
+   */
+  private async performProactiveExploration(): Promise<ProactiveExploration> {
+    const intelligence: string[] = [];
+    let projectStructure: ProjectStructure | undefined;
+    let dependencies: DependencyInfo | undefined;
+    let gitStatus: GitStatus | undefined;
+    
+    try {
+      // 1. 探索项目结构
+      projectStructure = await this.exploreProjectStructure();
+      if (projectStructure) {
+        intelligence.push(`项目语言: ${projectStructure.language}`);
+        if (projectStructure.hasPackageJson) {
+          intelligence.push('检测到 package.json');
+        }
+      }
+      
+      // 2. 探索依赖信息
+      dependencies = await this.exploreDependencies();
+      if (dependencies) {
+        intelligence.push(`依赖数量: ${dependencies.dependenciesCount}`);
+        intelligence.push(`开发依赖: ${dependencies.devDependenciesCount}`);
+      }
+      
+      // 3. 探索Git状态
+      gitStatus = await this.exploreGitStatus();
+      if (gitStatus?.isRepo) {
+        intelligence.push(`Git分支: ${gitStatus.branch}`);
+      }
+      
+    } catch (error) {
+      intelligence.push(`探索过程出错: ${(error as Error).message}`);
+    }
+    
+    return {
+      enabled: true,
+      projectStructure,
+      dependencies,
+      gitStatus,
+      intelligence,
+    };
+  }
+  
+  /**
+   * 探索项目结构
+   */
+  private async exploreProjectStructure(): Promise<ProjectStructure | undefined> {
+    // 简化的实现 - 实际应该调用文件系统工具
+    try {
+      // 尝试读取 package.json
+      const packageJsonExists = await this.checkFileExists('./package.json');
+      const tsconfigExists = await this.checkFileExists('./tsconfig.json');
+      const gitExists = await this.checkFileExists('./.git');
+      
+      return {
+        root: process.cwd(),
+        language: 'TypeScript', // 简化
+        hasPackageJson: packageJsonExists,
+        hasTsconfig: tsconfigExists,
+        hasGit: gitExists,
+        mainFiles: [],
+        testFiles: [],
+        configFiles: [],
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  
+  /**
+   * 探索依赖信息
+   */
+  private async exploreDependencies(): Promise<DependencyInfo | undefined> {
+    try {
+      // 简化实现
+      return {
+        packageManager: 'npm',
+        dependenciesCount: 0,
+        devDependenciesCount: 0,
+        keyDependencies: [],
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  
+  /**
+   * 探索Git状态
+   */
+  private async exploreGitStatus(): Promise<GitStatus | undefined> {
+    try {
+      // 简化实现
+      return {
+        isRepo: false,
+        branch: 'unknown',
+        hasUncommitted: false,
+        hasUntracked: false,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  
+  /**
+   * 检查文件是否存在
+   */
+  private async checkFileExists(path: string): Promise<boolean> {
+    // 这里应该调用文件系统工具
+    // 简化返回 false
+    return false;
   }
 
   private getAvailableTools(): string[] {

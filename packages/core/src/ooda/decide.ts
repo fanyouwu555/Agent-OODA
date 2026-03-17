@@ -7,10 +7,13 @@ import {
   DependencyGraph,
   Option,
   RiskAssessment,
-  IdentifiedRisk
+  IdentifiedRisk,
+  ReasoningStep,
+  FallbackStrategy
 } from '../types';
 import { getLLMService } from '../llm/service';
 import { ChatMessage, StreamOptions } from '../llm/provider';
+import { ToolSelector, getToolSelector } from './tool-selector';
 
 /**
  * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
@@ -28,6 +31,12 @@ interface DecisionAnalysis {
 }
 
 export class Decider {
+  private toolSelector: ToolSelector;
+  
+  constructor() {
+    this.toolSelector = getToolSelector();
+  }
+  
   private async getLLM() {
     return getLLMService();
   }
@@ -43,6 +52,9 @@ export class Decider {
     
     const riskAssessment = this.buildRiskAssessment(analysis);
     
+    // 生成ReAct推理链
+    const reasoningChain = this.generateReasoningChain(orientation, selectedOption, nextAction);
+    
     return {
       problemStatement: analysis.problemStatement,
       options: analysis.options,
@@ -51,7 +63,153 @@ export class Decider {
       nextAction,
       reasoning: analysis.reasoning,
       riskAssessment,
+      reasoningChain,
+      decisionMetadata: {
+        confidence: orientation.primaryIntent.confidence,
+        alternativesConsidered: analysis.options.map(o => o.id),
+        successCriteria: this.extractSuccessCriteria(orientation),
+      },
     };
+  }
+  
+  /**
+   * 生成ReAct风格的推理链
+   */
+  private generateReasoningChain(
+    orientation: Orientation,
+    selectedOption: Option,
+    nextAction: Action
+  ): ReasoningStep[] {
+    const chain: ReasoningStep[] = [];
+    const intent = orientation.primaryIntent;
+    
+    // Step 1: 理解问题
+    chain.push({
+      step: 1,
+      thought: `用户意图是${intent.type}，置信度${Math.round(intent.confidence * 100)}%`,
+    });
+    
+    // Step 2: 分析约束
+    if (orientation.constraints.length > 0) {
+      const criticalConstraints = orientation.constraints
+        .filter(c => c.severity === 'high')
+        .map(c => c.description)
+        .join('、');
+      if (criticalConstraints) {
+        chain.push({
+          step: 2,
+          thought: `需要考虑约束: ${criticalConstraints}`,
+        });
+      }
+    }
+    
+    // Step 3: 方案选择
+    chain.push({
+      step: 3,
+      thought: `选择方案: ${selectedOption.description}`,
+      action: selectedOption.approach,
+    });
+    
+    // Step 4: 风险评估
+    if (orientation.risks.length > 0) {
+      chain.push({
+        step: 4,
+        thought: `潜在风险: ${orientation.risks.join('; ')}`,
+      });
+    }
+    
+    // Step 5: 执行动作
+    if (nextAction.type === 'tool_call') {
+      chain.push({
+        step: 5,
+        thought: `执行工具: ${nextAction.toolName}`,
+        action: `${nextAction.toolName}(${JSON.stringify(nextAction.args)})`,
+      });
+      
+      // 添加自我反思（如果失败了怎么办）
+      nextAction.selfCritique = this.generateSelfCritique(nextAction, orientation);
+      
+      // 添加备用策略
+      nextAction.fallbackStrategy = this.generateFallbackStrategy(nextAction, orientation);
+    }
+    
+    return chain;
+  }
+  
+  /**
+   * 生成自我反思：如果失败了怎么办
+   */
+  private generateSelfCritique(action: Action, orientation: Orientation): string {
+    if (action.type !== 'tool_call') return '';
+    
+    const toolName = action.toolName || '';
+    
+    // 针对不同工具的自我反思
+    const critiques: Record<string, string> = {
+      read_file: '如果读取失败，可能是路径错误，需要检查文件是否存在或尝试glob搜索',
+      write_file: '如果写入失败，可能是权限问题或目录不存在，需要先创建目录',
+      run_bash: '如果命令失败，可能是命令不存在或参数错误，需要检查命令是否正确',
+      search_web: '如果搜索失败，可能是网络问题或查询词不当，需要简化查询',
+    };
+    
+    return critiques[toolName] || '如果执行失败，需要分析错误信息并尝试备用方案';
+  }
+  
+  /**
+   * 生成备用策略
+   */
+  private generateFallbackStrategy(action: Action, orientation: Orientation): FallbackStrategy {
+    const toolName = action.toolName || '';
+    
+    const strategies: Record<string, FallbackStrategy> = {
+      read_file: {
+        condition: '文件不存在',
+        alternativeTool: 'glob',
+        alternativeArgs: { pattern: action.args?.path },
+        simplifiedTask: true,
+      },
+      run_bash: {
+        condition: '命令不存在',
+        alternativeTool: 'run_bash',
+        alternativeArgs: { command: 'echo "命令执行失败"' },
+        simplifiedTask: true,
+      },
+    };
+    
+    return strategies[toolName] || {
+      condition: '执行失败',
+      simplifiedTask: true,
+    };
+  }
+  
+  /**
+   * 提取成功标准
+   */
+  private extractSuccessCriteria(orientation: Orientation): string[] {
+    const criteria: string[] = [];
+    const intentType = orientation.primaryIntent.type;
+    
+    switch (intentType) {
+      case 'question':
+        criteria.push('提供准确的答案', '回答清晰易懂');
+        break;
+      case 'file_read':
+        criteria.push('成功读取文件内容', '返回完整内容');
+        break;
+      case 'file_write':
+        criteria.push('成功写入文件', '内容正确保存');
+        break;
+      case 'execute':
+        criteria.push('命令执行成功', '返回预期结果');
+        break;
+      case 'search':
+        criteria.push('找到相关信息', '结果相关度高');
+        break;
+      default:
+        criteria.push('完成任务', '用户满意');
+    }
+    
+    return criteria;
   }
 
   /**
@@ -96,6 +254,16 @@ export class Decider {
     
     const riskAssessment = this.buildRiskAssessment(analysis);
     
+    // 生成ReAct推理链
+    const reasoningChain = this.generateReasoningChain(orientation, selectedOption, nextAction);
+    
+    // 发送推理链摘要
+    if (onThinking && reasoningChain) {
+      for (const step of reasoningChain) {
+        await onThinking('reasoning', `🔹 步骤${step.step}: ${step.thought}`);
+      }
+    }
+    
     return {
       problemStatement: analysis.problemStatement,
       options: analysis.options,
@@ -104,6 +272,12 @@ export class Decider {
       nextAction,
       reasoning: analysis.reasoning,
       riskAssessment,
+      reasoningChain,
+      decisionMetadata: {
+        confidence: orientation.primaryIntent.confidence,
+        alternativesConsidered: analysis.options.map(o => o.id),
+        successCriteria: this.extractSuccessCriteria(orientation),
+      },
     };
   }
 
@@ -464,6 +638,35 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     orientation: Orientation,
     analysis: DecisionAnalysis
   ): Promise<Action> {
+    // ========== 新增：基于知识缺口自动选择工具 ==========
+    // 检查 Orient 阶段是否检测到需要工具调用的知识缺口
+    const detectedGaps = orientation.relevantContext?.detectedKnowledgeGaps;
+    if (detectedGaps && detectedGaps.length > 0) {
+      const primaryGap = detectedGaps[0];
+      
+      // 如果置信度足够高，自动选择工具
+      if (primaryGap.confidence >= 0.6 && primaryGap.suggestedTool) {
+        console.log(`[Decide] 基于知识缺口自动选择工具: ${primaryGap.suggestedTool}`);
+        
+        return {
+          type: 'tool_call',
+          toolName: primaryGap.suggestedTool,
+          args: primaryGap.suggestedArgs || {},
+          reasoningChain: [
+            {
+              step: 1,
+              thought: `检测到知识缺口: ${primaryGap.description}`,
+            },
+            {
+              step: 2,
+              thought: `自动选择工具: ${primaryGap.suggestedTool} 来获取所需信息`,
+            },
+          ],
+        };
+      }
+    }
+    // ========== 知识缺口处理结束 ==========
+    
     // 启发式决策：高优先级知识缺口
     if (orientation.knowledgeGaps.some(g => g.importance > 0.8)) {
       const gap = orientation.knowledgeGaps.find(g => g.importance > 0.8);

@@ -4,6 +4,7 @@ export * from './embedding';
 export * from './persona';
 export * from './context-compressor';
 export * from './memory-expiration';
+export * from './hierarchical-memory';
 
 import { MemoryManager } from './short-term';
 import { LongTermMemory, LongTermMemoryConfig, Memory, MemoryMetadata } from './long-term';

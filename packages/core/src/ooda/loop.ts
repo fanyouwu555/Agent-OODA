@@ -4,6 +4,8 @@ import { Orienter, resetOrienterState, initOrienterCompressedCount, OrientThinki
 import { Decider, DecideThinkingCallback } from './decide';
 import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
+import { getHierarchicalMemory, HierarchicalMemoryManager } from '../memory/hierarchical-memory';
+import { getLearningModule, LearningModule } from './learning';
 import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
 import { OODACycleContext, createOODACycleContext, PhaseResult, LLMInteraction } from './types';
 
@@ -114,6 +116,8 @@ export class OODALoop {
   private decider: Decider;
   private actor: Actor;
   private sessionMemory: SessionMemory;
+  private hierarchicalMemory: HierarchicalMemoryManager;
+  private learningModule: LearningModule;
   private loopContext: LoopContext;
   private streamingManager?: StreamingOutputManager;
   private thinkingCallback?: ThinkingCallback;
@@ -136,6 +140,8 @@ export class OODALoop {
   constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>) {
     this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     this.sessionMemory = getSessionMemory(this.sessionId);
+    this.hierarchicalMemory = getHierarchicalMemory(this.sessionId);
+    this.learningModule = getLearningModule();
     this.loopContext = sessionLoopContextManager.getContext(this.sessionId);
     this.observer = new Observer(this.sessionId);
     this.orienter = new Orienter(this.sessionId);
@@ -409,6 +415,21 @@ export class OODALoop {
     
     this.loopContext.conversationSummary = orientation.relevantContext?.contextSummary;
     
+    // ========== P1-1: 分层记忆集成 - Orient阶段 ==========
+    // 设置当前意图到工作记忆
+    this.hierarchicalMemory.setIntent(orientation.primaryIntent.type);
+    // 设置当前任务
+    this.hierarchicalMemory.setCurrentTask(state.originalInput);
+    
+    // 获取决策上下文（包含历史学习经验）
+    const decisionContext = this.hierarchicalMemory.getDecisionContext();
+    console.log('[OODA] Decision context from memory:', {
+      recentActionsCount: decisionContext.recentActions.length,
+      successPatternsCount: decisionContext.successPatterns.length,
+      failurePatternsCount: decisionContext.failurePatterns.length,
+    });
+    // ========== 分层记忆集成结束 ==========
+    
     const orientEvent = { 
       phase: 'orient' as const, 
       data: { 
@@ -627,6 +648,42 @@ export class OODALoop {
     console.log(`[OODA] Cycle ${this.currentIteration} complete: ${cycleContext.getSummary()}`);
     
     this.loopContext.previousResults.push(actionResult);
+    
+    // ========== P1-2: 学习模块集成 ==========
+    // 从执行结果中学习
+    const action = decision.nextAction;
+    const intent = orientation.primaryIntent;
+    
+    // 1. 更新分层记忆
+    this.hierarchicalMemory.addAction(
+      action.toolName || action.type,
+      actionResult.success
+    );
+    this.hierarchicalMemory.addKeyEvent(
+      `${action.toolName || action.type}: ${actionResult.success ? '成功' : '失败'}`
+    );
+    
+    // 2. 调用长期学习模块
+    if (actionResult.success) {
+      await this.learningModule.learnFromSuccess(action, actionResult, intent);
+    } else {
+      await this.learningModule.learnFromFailure(
+        action, 
+        actionResult, 
+        intent, 
+        actionResult.feedback.issues[0]
+      );
+    }
+    
+    // 3. 记录决策
+    this.learningModule.recordDecision(
+      intent.type,
+      orientation.constraints.map(c => c.description),
+      decision.selectedOption?.description || 'default',
+      decision.options.map(o => o.description),
+      actionResult.success ? 'success' : 'failure'
+    );
+    // ========== 学习模块集成结束 ==========
     
     if (actionResult.feedback.issues.length > 0 || actionResult.feedback.suggestions.length > 0) {
       const feedbackEvent = {

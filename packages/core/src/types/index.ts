@@ -106,6 +106,14 @@ export interface Decision {
   nextAction: Action;
   reasoning: string;
   riskAssessment: RiskAssessment;
+  /** ReAct风格的多步推理链 */
+  reasoningChain?: ReasoningStep[];
+  /** 决策元数据 */
+  decisionMetadata?: {
+    confidence: number;
+    alternativesConsidered: string[];
+    successCriteria: string[];
+  };
 }
 
 export interface Option {
@@ -139,6 +147,28 @@ export interface Action {
   args?: Record<string, unknown>;
   content?: string;
   clarificationQuestion?: string;
+  /** ReAct推理链：思考过程 */
+  reasoningChain?: ReasoningStep[];
+  /** 自我反思：如果失败了怎么办 */
+  selfCritique?: string;
+  /** 备用方案 */
+  fallbackStrategy?: FallbackStrategy;
+}
+
+/** ReAct推理链中的单个步骤 */
+export interface ReasoningStep {
+  step: number;
+  thought: string;
+  action?: string;
+  observation?: string;
+}
+
+/** 备用策略 */
+export interface FallbackStrategy {
+  condition: string;
+  alternativeTool?: string;
+  alternativeArgs?: Record<string, unknown>;
+  simplifiedTask?: boolean;
 }
 
 export interface ActionPlan {
@@ -174,6 +204,15 @@ export interface Context {
   recentEvents: Message[];
   userPreferences: Record<string, unknown>;
   contextSummary?: string;
+  /** 检测到的知识缺口（由 Orient 阶段自动检测） */
+  detectedKnowledgeGaps?: Array<{
+    type: string;
+    description: string;
+    confidence: number;
+    suggestedTool?: string;
+    suggestedArgs?: Record<string, unknown>;
+    triggerKeywords: string[];
+  }>;
 }
 
 export interface Constraint {
@@ -241,4 +280,51 @@ export interface ActionFeedback {
   newInformation: string[];
   issues: string[];
   suggestions: string[];
+}
+
+/**
+ * 主动探索结果 - 扩展的环境信息
+ */
+export interface ProactiveExploration {
+  /** 是否启用了主动探索 */
+  enabled: boolean;
+  /** 探索的项目结构 */
+  projectStructure?: ProjectStructure;
+  /** 探索的依赖信息 */
+  dependencies?: DependencyInfo;
+  /** 探索的Git状态 */
+  gitStatus?: GitStatus;
+  /** 探索的环境变量 */
+  envVars?: Record<string, string>;
+  /** 额外收集的情报 */
+  intelligence: string[];
+}
+
+/** 项目结构信息 */
+export interface ProjectStructure {
+  root: string;
+  language: string;
+  hasPackageJson: boolean;
+  hasTsconfig: boolean;
+  hasGit: boolean;
+  mainFiles: string[];
+  testFiles: string[];
+  configFiles: string[];
+}
+
+/** 依赖信息 */
+export interface DependencyInfo {
+  packageManager: 'npm' | 'yarn' | 'pnpm' | 'unknown';
+  dependenciesCount: number;
+  devDependenciesCount: number;
+  keyDependencies: string[];
+}
+
+/** Git状态 */
+export interface GitStatus {
+  isRepo: boolean;
+  branch: string;
+  hasUncommitted: boolean;
+  hasUntracked: boolean;
+  lastCommitDate?: number;
 }

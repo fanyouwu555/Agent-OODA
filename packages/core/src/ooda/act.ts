@@ -1,10 +1,27 @@
 // packages/core/src/ooda/act.ts
-import { Decision, Action, ActionResult, ActionFeedback } from '../types';
+import { Decision, Action, ActionResult, ActionFeedback, FallbackStrategy } from '../types';
 import { UnifiedToolRegistryImpl } from '../tool/registry';
 import { SkillContext } from '../skill/interface';
 import { getSkillRegistry } from '../skill/registry';
 import { getMCPService } from '../mcp/service';
 import { getPermissionManager, PermissionMode } from '../permission';
+
+/**
+ * 重试配置
+ */
+export interface RetryConfig {
+  maxRetries: number;
+  baseDelay: number;      // 基础延迟（毫秒）
+  maxDelay: number;       // 最大延迟（毫秒）
+  backoffMultiplier: number;  // 退避倍数
+}
+
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxRetries: 3,
+  baseDelay: 1000,
+  maxDelay: 10000,
+  backoffMultiplier: 2,
+};
 
 export class Actor {
   private sessionId: string;
@@ -12,43 +29,30 @@ export class Actor {
   private skillRegistry = getSkillRegistry();
   private mcp = getMCPService();
   private permissionManager = getPermissionManager();
-
-  constructor(sessionId: string, toolRegistry?: UnifiedToolRegistryImpl) {
+  private retryConfig: RetryConfig;
+  
+  constructor(
+    sessionId: string, 
+    toolRegistry?: UnifiedToolRegistryImpl,
+    retryConfig?: Partial<RetryConfig>
+  ) {
     this.sessionId = sessionId;
     this.toolRegistry = toolRegistry || new UnifiedToolRegistryImpl();
+    this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
   }
 
   async act(decision: Decision): Promise<ActionResult> {
     const action = decision.nextAction;
     const startTime = Date.now();
     
+    // 检查是否有备用策略
+    const fallbackStrategy = action.fallbackStrategy;
+    
     try {
-      let result: unknown;
-      let sideEffects: string[] = [];
+      // 尝试执行，带重试
+      const result = await this.executeWithRetry(action, fallbackStrategy);
       
-      switch (action.type) {
-        case 'tool_call':
-          result = await this.executeTool(action);
-          sideEffects = this.identifySideEffects(action, result);
-          break;
-          
-        case 'skill_call':
-          result = await this.executeSkill(action);
-          sideEffects = this.identifySideEffects(action, result);
-          break;
-          
-        case 'response':
-          result = await this.generateResponse(action);
-          break;
-          
-        case 'clarification':
-          result = await this.requestClarification(action);
-          break;
-          
-        default:
-          throw new Error(`Unknown action type: ${(action as Action).type}`);
-      }
-      
+      const sideEffects = this.identifySideEffects(action, result);
       const feedback = this.generateFeedback(action, result, decision);
       const executionTime = Date.now() - startTime;
       
@@ -82,6 +86,161 @@ export class Actor {
         },
       };
     }
+  }
+  
+  /**
+   * 带重试的执行
+   */
+  private async executeWithRetry(
+    action: Action,
+    fallbackStrategy?: FallbackStrategy
+  ): Promise<unknown> {
+    let lastError: Error | null = null;
+    let currentAction = action;
+    
+    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+      try {
+        // 尝试执行当前动作
+        return await this.executeAction(currentAction);
+      } catch (error) {
+        lastError = error as Error;
+        
+        // 检查是否可以重试
+        if (!this.isRetryable(error as Error)) {
+          throw error;
+        }
+        
+        // 如果是最后一次尝试，抛出错误
+        if (attempt >= this.retryConfig.maxRetries) {
+          break;
+        }
+        
+        // 计算延迟（指数退避）
+        const delay = Math.min(
+          this.retryConfig.baseDelay * Math.pow(this.retryConfig.backoffMultiplier, attempt),
+          this.retryConfig.maxDelay
+        );
+        
+        console.log(`[Actor] Retry attempt ${attempt + 1} after ${delay}ms delay`);
+        await this.sleep(delay);
+        
+        // 尝试降级策略
+        if (fallbackStrategy && attempt > 0) {
+          currentAction = this.applyFallbackStrategy(currentAction, fallbackStrategy, error as Error);
+          console.log(`[Actor] Applied fallback strategy: ${fallbackStrategy.condition}`);
+        }
+      }
+    }
+    
+    throw lastError || new Error('Unknown error after retries');
+  }
+  
+  /**
+   * 判断错误是否可重试
+   */
+  private isRetryable(error: Error): boolean {
+    const errorMessage = error.message.toLowerCase();
+    
+    // 可重试的错误类型
+    const retryablePatterns = [
+      'timeout',
+      'network',
+      'econnrefused',
+      'econnreset',
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'rate limit',
+    ];
+    
+    return retryablePatterns.some(pattern => errorMessage.includes(pattern));
+  }
+  
+  /**
+   * 应用降级策略
+   */
+  private applyFallbackStrategy(
+    action: Action,
+    strategy: FallbackStrategy,
+    error: Error
+  ): Action {
+    const newAction = { ...action };
+    
+    // 如果有替代工具
+    if (strategy.alternativeTool && strategy.alternativeTool !== action.toolName) {
+      newAction.toolName = strategy.alternativeTool;
+      newAction.args = { ...strategy.alternativeArgs };
+      console.log(`[Actor] Falling back to tool: ${strategy.alternativeTool}`);
+    }
+    
+    // 如果是简化任务
+    if (strategy.simplifiedTask) {
+      // 简化参数
+      if (newAction.args) {
+        newAction.args = this.simplifyArgs(newAction.toolName || '', newAction.args);
+      }
+      console.log(`[Actor] Simplified task arguments`);
+    }
+    
+    return newAction;
+  }
+  
+  /**
+   * 简化参数
+   */
+  private simplifyArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+    const simplified: Record<string, unknown> = { ...args };
+    
+    switch (toolName) {
+      case 'read_file':
+        // 限制读取行数
+        if (!simplified.limit) {
+          simplified.limit = 50;
+        }
+        break;
+        
+      case 'search_web':
+        // 简化搜索查询
+        if (simplified.query && typeof simplified.query === 'string') {
+          simplified.query = simplified.query.split(' ').slice(0, 3).join(' ');
+        }
+        break;
+        
+      case 'run_bash':
+        // 不做简化，保持原样
+        break;
+    }
+    
+    return simplified;
+  }
+  
+  /**
+   * 执行单个动作
+   */
+  private async executeAction(action: Action): Promise<unknown> {
+    switch (action.type) {
+      case 'tool_call':
+        return await this.executeTool(action);
+        
+      case 'skill_call':
+        return await this.executeSkill(action);
+        
+      case 'response':
+        return await this.generateResponse(action);
+        
+      case 'clarification':
+        return await this.requestClarification(action);
+        
+      default:
+        throw new Error(`Unknown action type: ${(action as Action).type}`);
+    }
+  }
+  
+  /**
+   * 睡眠辅助函数
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   private async executeTool(action: Action): Promise<unknown> {

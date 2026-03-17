@@ -3,6 +3,8 @@ import { getLLMService } from '../llm/service';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { MemoryCompressor } from '../memory/long-term';
+import { KnowledgeGapDetector, KnowledgeGapType, getKnowledgeGapDetector, DetectedKnowledgeGap } from './knowledge-gap';
+import { ToolSelector, getToolSelector, ToolSelection } from './tool-selector';
 
 /**
  * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
@@ -73,11 +75,16 @@ export class Orienter {
   private sessionId: string;
   private sessionMemory: SessionMemory;
   private state: OrienterState;
+  private knowledgeGapDetector: KnowledgeGapDetector;
+  private toolSelector: ToolSelector;
   
   constructor(sessionId: string) {
     this.sessionId = sessionId;
     this.sessionMemory = getSessionMemory(sessionId);
     this.state = orienterStateManager.getState(sessionId);
+    // 初始化知识缺口检测器和工具选择器
+    this.knowledgeGapDetector = getKnowledgeGapDetector();
+    this.toolSelector = getToolSelector();
   }
   
   private async getLLM() {
@@ -91,6 +98,27 @@ export class Orienter {
         const analysisResult = await this.performDeepAnalysis(observation);
         
         const intent = this.buildIntent(analysisResult, observation.userInput);
+        
+        // ========== 新增：知识缺口自动检测 ==========
+        const detectedGaps = this.knowledgeGapDetector.detect(observation.userInput, observation);
+        const primaryGap = detectedGaps[0];
+        
+        // 如果检测到需要工具调用的知识缺口，更新 intent 类型
+        if (primaryGap && primaryGap.type !== KnowledgeGapType.NONE && primaryGap.confidence >= 0.6) {
+          // 将检测到的知识缺口转换为 intent 参数
+          intent.parameters = {
+            ...intent.parameters,
+            knowledgeGap: primaryGap.type,
+            suggestedTool: primaryGap.suggestedTool,
+            suggestedArgs: primaryGap.suggestedArgs,
+            gapConfidence: primaryGap.confidence,
+            triggerKeywords: primaryGap.triggerKeywords,
+          };
+          
+          console.log(`[Orienter] 检测到知识缺口: ${primaryGap.type}, 建议工具: ${primaryGap.suggestedTool}, 置信度: ${primaryGap.confidence}`);
+        }
+        // ========== 知识缺口检测结束 ==========
+        
         const constraints = this.identifyConstraints(observation, analysisResult);
         const knowledgeGaps = this.identifyKnowledgeGaps(observation, intent, analysisResult);
         const patterns = this.synthesizePatterns(observation, analysisResult);
@@ -101,6 +129,8 @@ export class Orienter {
             relevantContext: {
                 ...observation.context,
                 contextSummary: analysisResult.contextSummary,
+                // 将检测到的知识缺口传递给下一阶段
+                detectedKnowledgeGaps: detectedGaps,
             },
             constraints,
             knowledgeGaps,
@@ -124,6 +154,28 @@ export class Orienter {
     
     const intent = this.buildIntent(analysisResult, observation.userInput);
     
+    // ========== 新增：知识缺口自动检测 ==========
+    const detectedGaps = this.knowledgeGapDetector.detect(observation.userInput, observation);
+    const primaryGap = detectedGaps[0];
+    
+    // 如果检测到需要工具调用的知识缺口，更新 intent 类型
+    if (primaryGap && primaryGap.type !== KnowledgeGapType.NONE && primaryGap.confidence >= 0.6) {
+      intent.parameters = {
+        ...intent.parameters,
+        knowledgeGap: primaryGap.type,
+        suggestedTool: primaryGap.suggestedTool,
+        suggestedArgs: primaryGap.suggestedArgs,
+        gapConfidence: primaryGap.confidence,
+        triggerKeywords: primaryGap.triggerKeywords,
+      };
+      
+      // 发送知识缺口检测结果
+      if (onThinking) {
+        await onThinking('analysis', `🔍 检测到知识缺口: ${primaryGap.type}, 建议工具: ${primaryGap.suggestedTool}`);
+      }
+    }
+    // ========== 知识缺口检测结束 ==========
+    
     // 发送意图识别结果
     if (onThinking) {
       await onThinking('intent', `✨ 识别到意图: ${intent.type} (置信度: ${Math.round(intent.confidence * 100)}%)`);
@@ -139,6 +191,8 @@ export class Orienter {
       relevantContext: {
         ...observation.context,
         contextSummary: analysisResult.contextSummary,
+        // 将检测到的知识缺口传递给下一阶段
+        detectedKnowledgeGaps: detectedGaps,
       },
       constraints,
       knowledgeGaps,

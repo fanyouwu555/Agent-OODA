@@ -274,6 +274,60 @@ export interface PhaseResult<T> {
 }
 
 /**
+ * 智能完成判断接口 - 支持多维度判断任务是否完成
+ */
+export interface CompletionCriteria {
+  /** 意图类型 */
+  intentType: string;
+  /** Action执行是否成功 */
+  actionSuccess: boolean;
+  /** Action结果 */
+  actionResult?: ActionResult;
+}
+
+/**
+ * 判断任务是否完成的智能逻辑
+ */
+export function evaluateCompletion(
+  intentType: string,
+  actionSuccess: boolean,
+  actionResult?: ActionResult
+): boolean {
+  // 1. 执行失败，绝对不完成
+  if (!actionSuccess) {
+    return false;
+  }
+
+  // 2. 根据意图类型判断
+  switch (intentType) {
+    // 问答类：回复用户即完成
+    case 'question':
+    case 'general':
+      return actionSuccess;
+
+    // 工具调用类：需要检查是否有实际产出
+    case 'file_read':
+    case 'file_write':
+    case 'execute':
+    case 'search':
+    case 'code_analysis':
+      // 有新信息产出，或者没有遗留问题
+      if (!actionResult) return actionSuccess;
+      const hasNewInfo = actionResult.feedback?.newInformation?.length > 0;
+      const noIssues = actionResult.feedback?.issues?.length === 0;
+      return hasNewInfo || noIssues;
+
+    // 澄清请求：不视为完成，需要用户响应
+    case 'clarification':
+      return false;
+
+    // 默认：执行成功即完成
+    default:
+      return actionSuccess;
+  }
+}
+
+/**
  * OODA 循环上下文 - 封装所有阶段数据
  */
 export interface OODACycleContext {
@@ -317,8 +371,12 @@ export function createOODACycleContext(sessionId: string, iteration: number, ori
       return this.act?.data ?? null;
     },
     isComplete() {
-      // Act 阶段成功执行后认为完成
-      return this.act?.success === true;
+      // 使用多维完成判断
+      const intentType = this.orient?.data?.primaryIntent?.type || 'general';
+      const actionSuccess = this.act?.success === true;
+      const actionResult = this.act?.data;
+      
+      return evaluateCompletion(intentType, actionSuccess, actionResult);
     },
     getSummary() {
       const parts: string[] = [];
