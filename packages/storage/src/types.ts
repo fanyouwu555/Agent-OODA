@@ -1,12 +1,12 @@
 export interface SessionRecord {
   id: string;
   createdAt: number;
-  updatedAt: number;
+  updatedAt: number | null;
   metadata?: Record<string, unknown>;
   title?: string;
   summary?: string;
   status?: 'active' | 'archived';
-  archivedAt?: number;
+  archivedAt?: number | null;
 }
 
 export interface SessionSearchOptions {
@@ -61,6 +61,15 @@ export interface CreateMemoryInput {
   importance: number;
 }
 
+export interface UserRecord {
+  id: string;
+  email: string;
+  password: string;
+  role: 'user' | 'admin';
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ISessionRepository {
   create(input: { id: string; metadata?: Record<string, unknown>; title?: string }): SessionRecord;
   findById(id: string): SessionRecord | null;
@@ -108,4 +117,14 @@ export interface IMemoryRepository {
   delete(id: string): boolean;
   deleteLeastImportant(): boolean;
   size(): number;
+}
+
+export interface IUserRepository {
+  create(input: { email: string; password: string; role?: 'user' | 'admin' }): UserRecord;
+  findByEmail(email: string): UserRecord | null;
+  findById(id: string): UserRecord | null;
+  update(id: string, data: Partial<{ email: string; password: string; role: 'user' | 'admin' }>): boolean;
+  delete(id: string): boolean;
+  count(): number;
+  findAll(): UserRecord[];
 }

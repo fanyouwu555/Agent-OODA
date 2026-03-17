@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS long_term_memories (
   last_accessed INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id);
@@ -75,6 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON long_term_memories(last
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
 CREATE INDEX IF NOT EXISTS idx_sessions_summary ON sessions(summary);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 `;
 
 export class DatabaseManager {

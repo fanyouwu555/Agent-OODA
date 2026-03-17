@@ -1,10 +1,10 @@
 import type { DatabaseManager } from '../database.js';
-import type { SessionRecord, MessageRecord, ToolCallRecord, MemoryRecord, CreateMemoryInput } from '../types.js';
+import type { SessionRecord, MessageRecord, ToolCallRecord, MemoryRecord, CreateMemoryInput, UserRecord } from '../types.js';
 
 interface SessionRow {
   id: string;
   created_at: number;
-  updated_at: number;
+  updated_at: number | null;
   metadata: string | null;
   title: string | null;
   summary: string | null;
@@ -551,3 +551,5 @@ export class MemoryRepository {
     };
   }
 }
+
+export { UserRepository } from './user.js';

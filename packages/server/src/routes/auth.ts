@@ -1,10 +1,19 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { generateToken, authMiddleware, requireRole, getCurrentUser } from '../middleware/auth';
+import { createStorage } from '@ooda-agent/storage';
 
 export const authRoutes = new Hono();
 
-const users = new Map<string, { id: string; email: string; password: string; role: 'user' | 'admin' }>();
+let storagePromise: ReturnType<typeof createStorage> | null = null;
+
+async function getStorage() {
+  if (!storagePromise) {
+    const dbPath = process.env.DATABASE_PATH || './data/ooda-agent.db';
+    storagePromise = createStorage(dbPath);
+  }
+  return storagePromise;
+}
 
 function validateEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -37,15 +46,17 @@ authRoutes.post('/register', async (c) => {
     throw new HTTPException(400, { message: 'Password must be at least 8 characters' });
   }
   
-  if (users.has(email)) {
+  const storage = await getStorage();
+  const existingUser = await storage.users.findByEmail(email);
+  
+  if (existingUser) {
     throw new HTTPException(409, { message: 'User already exists' });
   }
   
   const userId = crypto.randomUUID();
   const hashedPassword = hashPassword(password);
   
-  users.set(email, {
-    id: userId,
+  await storage.users.create({
     email,
     password: hashedPassword,
     role: 'user',
@@ -74,7 +85,8 @@ authRoutes.post('/login', async (c) => {
     throw new HTTPException(400, { message: 'Email and password are required' });
   }
   
-  const user = users.get(email);
+  const storage = await getStorage();
+  const user = await storage.users.findByEmail(email);
   
   if (!user || user.password !== hashPassword(password)) {
     throw new HTTPException(401, { message: 'Invalid credentials' });
@@ -110,15 +122,16 @@ authRoutes.post('/logout', authMiddleware, (c) => {
   });
 });
 
-authRoutes.get('/users', authMiddleware, requireRole('admin'), (c) => {
-  const allUsers = Array.from(users.values()).map(u => ({
-    id: u.id,
-    email: u.email,
-    role: u.role,
-  }));
+authRoutes.get('/users', authMiddleware, requireRole('admin'), async (c) => {
+  const storage = await getStorage();
+  const allUsers = await storage.users.findAll();
   
   return c.json({
     success: true,
-    data: { users: allUsers },
+    data: { users: allUsers.map(u => ({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+    })) },
   });
 });
