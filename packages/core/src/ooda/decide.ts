@@ -298,7 +298,7 @@ export class Decider {
     // 使用流式调用 LLM
     let fullResponse = '';
     const streamOptions: StreamOptions = {
-      maxTokens: 200,
+      maxTokens: 1000,
       onToken: (token) => {
         fullResponse += token;
       },
@@ -321,7 +321,7 @@ export class Decider {
   private async performDecisionAnalysis(orientation: Orientation): Promise<DecisionAnalysis> {
     const llmService = await this.getLLM();
     const prompt = this.buildDecisionPrompt(orientation);
-    const response = await llmService.generate(prompt, { maxTokens: 200 });  // 本地模型限制
+    const response = await llmService.generate(prompt, { maxTokens: 1000 });
     
     return this.parseDecisionResponse(response.text, orientation);
   }
@@ -441,16 +441,82 @@ ${risks || '无已识别风险'}
   }
 
   private fallbackDecision(orientation: Orientation): DecisionAnalysis {
-    const options = [this.createDefaultOption(orientation)];
+    // 改进：生成多个方案，而不是只有一个默认选项
+    const options = this.createMultipleOptions(orientation);
     
     return {
       problemStatement: `处理用户请求: ${orientation.primaryIntent.type}`,
       options,
       recommendedOption: options[0].id,
-      reasoning: '使用默认方案处理请求',
+      reasoning: '基于分析选择最佳方案',
       risks: [],
       mitigationStrategies: [],
     };
+  }
+
+  /**
+   * 创建多个可选方案 - 改进版
+   * 针对新闻摘要等场景，生成专门的方案
+   */
+  private createMultipleOptions(orientation: Orientation): Option[] {
+    const options: Option[] = [];
+    const intent = orientation.primaryIntent;
+    
+    // 检查是否是新闻摘要类型的请求
+    const isNewsSummary = intent.parameters?.knowledgeGap === 'news_summary' ||
+                          intent.parameters?.knowledgeGap === 'realtime_info';
+    
+    // 方案1：默认处理方案（基础）
+    options.push(this.createDefaultOption(orientation));
+    
+    // 如果是新闻相关请求，添加专门的方案
+    if (isNewsSummary) {
+      // 方案2：搜索并生成摘要（推荐用于新闻）
+      options.push({
+        id: 'search_with_summary',
+        description: '搜索新闻并生成摘要',
+        approach: '使用 web_search 获取新闻链接，然后调用 LLM 生成简洁摘要',
+        pros: ['直接提供新闻内容而非网站链接', '用户无需点击链接', '信息密度高'],
+        cons: ['处理时间稍长', '依赖搜索结果质量'],
+        estimatedComplexity: 'medium',
+        estimatedImpact: 'high',
+        riskLevel: 'low',
+        score: 0.85,
+      });
+      
+      // 方案3：多源新闻汇总
+      options.push({
+        id: 'multi_source_summary',
+        description: '多源新闻汇总',
+        approach: '从多个新闻源获取信息，生成综合摘要',
+        pros: ['信息更全面', '可对比不同来源'],
+        cons: ['复杂度更高', '可能信息过载'],
+        estimatedComplexity: 'high',
+        estimatedImpact: 'high',
+        riskLevel: 'medium',
+        score: 0.75,
+      });
+    }
+    
+    // 如果是问题类型，添加问答方案
+    if (intent.type === 'question') {
+      options.push({
+        id: 'direct_answer',
+        description: '直接回答问题',
+        approach: '基于上下文和工具结果直接生成答案',
+        pros: ['响应速度快', '直接解决问题'],
+        cons: ['可能不够详细'],
+        estimatedComplexity: 'low',
+        estimatedImpact: 'medium',
+        riskLevel: 'low',
+        score: 0.7,
+      });
+    }
+    
+    // 按得分排序，返回得分最高的
+    options.sort((a, b) => b.score - a.score);
+    
+    return options;
   }
 
   private createDefaultOption(orientation: Orientation): Option {
@@ -508,8 +574,17 @@ ${risks || '无已识别风险'}
   private async decomposeTask(orientation: Orientation, selectedOption: Option): Promise<Subtask[]> {
     const intent = orientation.primaryIntent;
     
-    if (intent.type === 'question' || intent.type === 'general') {
+    // 改进：对于新闻摘要类请求，也需要分解任务
+    const isNewsSummary = intent.parameters?.knowledgeGap === 'news_summary' ||
+                          intent.parameters?.summarize === true;
+    
+    if ((intent.type === 'question' || intent.type === 'general') && !isNewsSummary) {
       return [];
+    }
+    
+    // 如果是新闻摘要请求，生成专门的子任务
+    if (isNewsSummary) {
+      return this.createNewsSummaryTasks(orientation, selectedOption);
     }
     
     const llmService = await this.getLLM();
@@ -533,6 +608,40 @@ ${risks || '无已识别风险'}
     }
     
     return this.getDefaultSubtasks(intent);
+  }
+
+  /**
+   * 创建新闻摘要任务 - 专门处理新闻摘要请求
+   */
+  private createNewsSummaryTasks(orientation: Orientation, selectedOption: Option): Subtask[] {
+    const intent = orientation.primaryIntent;
+    const query = intent.rawInput || '';
+    
+    return [
+      {
+        id: 'search_news',
+        description: '搜索今日新闻',
+        toolName: 'web_search',
+        args: { 
+          query: query,
+          limit: 10  // 获取更多结果以便摘要
+        },
+        dependencies: [],
+        status: 'pending',
+      },
+      {
+        id: 'summarize_news',
+        description: '生成新闻摘要',
+        toolName: 'llm_summarize',  // 虚拟工具，实际通过 response 生成
+        args: {
+          source: 'search_results',
+          style: 'bullet',  // 要点式摘要
+          maxItems: 5,      // 最多5条要点
+        },
+        dependencies: ['search_news'],
+        status: 'pending',
+      },
+    ];
   }
 
   private buildDecomposePrompt(orientation: Orientation, selectedOption: Option): string {
@@ -647,6 +756,32 @@ ${orientation.constraints.map(c => c.description).join(', ')}
       // 如果置信度足够高，自动选择工具
       if (primaryGap.confidence >= 0.6 && primaryGap.suggestedTool) {
         console.log(`[Decide] 基于知识缺口自动选择工具: ${primaryGap.suggestedTool}`);
+        
+        // 特殊处理：新闻摘要请求
+        if (primaryGap.type === 'news_summary' || primaryGap.suggestedTool === 'web_search_with_summary') {
+          // 返回带特殊参数的工具调用，通知后续处理生成摘要
+          const searchArgs = primaryGap.suggestedArgs || { query: orientation.primaryIntent.rawInput, limit: 10 };
+          // 添加 summarize 标记
+          searchArgs['summarize'] = true;
+          searchArgs['summaryStyle'] = 'bullet';
+          searchArgs['maxItems'] = 5;
+          
+          return {
+            type: 'tool_call',
+            toolName: 'web_search',
+            args: searchArgs,
+            reasoningChain: [
+              {
+                step: 1,
+                thought: `检测到新闻摘要需求: ${primaryGap.description}`,
+              },
+              {
+                step: 2,
+                thought: `搜索新闻并准备生成摘要（将使用 LLM 将链接转为摘要）`,
+              },
+            ],
+          };
+        }
         
         return {
           type: 'tool_call',

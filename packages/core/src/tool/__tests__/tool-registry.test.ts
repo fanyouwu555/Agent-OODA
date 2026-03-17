@@ -1,13 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
-  UnifiedToolRegistryImpl,
-  createUnifiedToolRegistry,
+  ToolRegistryImpl,
+  createToolRegistry,
   PermissionDeniedError
 } from '../registry';
 import { UnifiedTool, toolNameMatches, getToolRiskLevel } from '../interface';
-import { PermissionMode } from '../../permission';
+import { PermissionMode, PermissionManagerImpl } from '../../permission';
 import { z } from 'zod';
-import { EnhancedPermissionManagerImpl } from '../../permission/enhanced-manager';
 
 const createMockTool = (name: string, category: string = 'test'): UnifiedTool => ({
   name,
@@ -31,11 +30,11 @@ const createMockSkill = (name: string): UnifiedTool => ({
   shutdown: vi.fn().mockResolvedValue(undefined)
 });
 
-describe('UnifiedToolRegistry', () => {
-  let registry: UnifiedToolRegistryImpl;
+describe('ToolRegistry', () => {
+  let registry: ToolRegistryImpl;
 
   beforeEach(() => {
-    registry = createUnifiedToolRegistry();
+    registry = createToolRegistry();
   });
 
   describe('registerTool', () => {
@@ -239,7 +238,7 @@ describe('UnifiedToolRegistry', () => {
       
       registry.registerTool(tool);
       
-      const permManager = new EnhancedPermissionManagerImpl({
+      const permManager = new PermissionManagerImpl({
         global: {
           defaultMode: PermissionMode.DENY,
           tools: { 'protected-tool': PermissionMode.DENY },

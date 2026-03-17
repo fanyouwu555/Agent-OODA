@@ -5,6 +5,7 @@ export * from './ooda/observe';
 export * from './ooda/decide';
 export * from './ooda/act';
 export * from './ooda/orient';
+export * from './ooda/llm-strategy';
 export * from './llm/provider';
 export * from './llm/service';
 export * from './memory';
@@ -22,8 +23,6 @@ export type { FlowNode, FlowContext, FlowResult, NodeExecutor, NodeStatus } from
 export { ResponseAggregator, getResponseAggregator, deleteResponseAggregator } from './response/aggregator';
 export type { AggregatedResponse, ResponseMetadata, ToolCallResult } from './response/aggregator';
 export * from './permission';
-export * from './permission/enhanced';
-export * from './permission/enhanced-manager';
 export * from './agent';
 export * from './tool';
 export * from './multimodal';

@@ -1,4 +1,4 @@
-import { PermissionMode } from '../permission';
+import { PermissionMode, PermissionCondition, PermissionPattern } from '../permission';
 import { z } from 'zod';
 
 export interface AgentMetadata {
@@ -15,18 +15,6 @@ export interface AgentTrigger {
   patterns?: string[];
   fileTypes?: string[];
   autoStart?: boolean;
-}
-
-export interface PermissionCondition {
-  type: 'path' | 'command' | 'resource';
-  operator: 'equals' | 'contains' | 'matches' | 'startsWith';
-  value: string;
-}
-
-export interface PermissionPattern {
-  pattern: string;
-  mode: PermissionMode;
-  conditions?: PermissionCondition[];
 }
 
 export interface AgentPermissionConfig {

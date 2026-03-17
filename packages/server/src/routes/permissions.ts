@@ -4,9 +4,9 @@ import {
   getPermissionManager, 
   PermissionMode, 
   DEFAULT_PERMISSION_CONFIG,
-  EnhancedPermissionManager 
+  PermissionManager 
 } from '@ooda-agent/core';
-import { getUnifiedToolRegistry } from '@ooda-agent/core';
+import { getToolRegistry } from '@ooda-agent/core';
 
 const permissionRoutes = new Hono();
 
@@ -38,24 +38,50 @@ let storedPermissionConfig: StoredPermissionConfig = {
   global: {
     defaultMode: PermissionMode.ASK,
     tools: {
+      // 读取类操作 - 默认允许
       'file:read': PermissionMode.ALLOW,
+      'grep': PermissionMode.ALLOW,
+      'glob': PermissionMode.ALLOW,
+      'list': PermissionMode.ALLOW,
+      
+      // 写入类操作 - 需要确认
       'file:write': PermissionMode.ASK,
-      'file:delete': PermissionMode.DENY,
+      'edit': PermissionMode.ASK,
+      
+      // 危险操作 - 需要确认或拒绝
       'bash:run': PermissionMode.ASK,
+      'file:delete': PermissionMode.DENY,
+      
+      // 网络操作 - 默认允许
       'web:fetch': PermissionMode.ALLOW,
       'web:search': PermissionMode.ALLOW,
+      'web_search': PermissionMode.ALLOW,
+      'web_fetch': PermissionMode.ALLOW,
     },
     skills: {
       'skill-read': PermissionMode.ALLOW,
       'skill-write': PermissionMode.ASK,
     },
   },
-  agents: {},
+  
+  // 默认 Agent - 继承全局权限
+  agents: {
+    'default': {
+      inherit: true,
+      tools: {},
+      skills: {},
+    }
+  },
+  
   groups: {
     'safe-tools': {
       'file:read': PermissionMode.ALLOW,
+      'grep': PermissionMode.ALLOW,
+      'glob': PermissionMode.ALLOW,
       'web:fetch': PermissionMode.ALLOW,
       'web:search': PermissionMode.ALLOW,
+      'web_search': PermissionMode.ALLOW,
+      'web_fetch': PermissionMode.ALLOW,
     },
     'dangerous-tools': {
       'file:delete': PermissionMode.DENY,
@@ -93,11 +119,7 @@ permissionRoutes.patch('/global', async (c) => {
   
   // 更新 PermissionManager
   const pm = getPermissionManager();
-  const newConfig = {
-    ...pm.getConfig(),
-    [tool]: mode,
-  };
-  pm.updateConfig(newConfig);
+  pm.updateGlobalPermission(tool, mode as PermissionMode);
   
   return c.json({ success: true });
 });
@@ -148,7 +170,7 @@ permissionRoutes.delete('/agents/:agent', async (c) => {
 
 // GET /api/permissions/tools - 获取工具列表及其权限状态
 permissionRoutes.get('/tools', async (c) => {
-  const registry = getUnifiedToolRegistry();
+  const registry = getToolRegistry();
   const tools = registry.list();
   
   const toolPermissions = tools.map(tool => ({

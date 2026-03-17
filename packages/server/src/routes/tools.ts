@@ -1,12 +1,12 @@
 // packages/server/src/routes/tools.ts
 import { Hono } from 'hono';
-import { getUnifiedToolRegistry } from '@ooda-agent/core';
+import { getToolRegistry } from '@ooda-agent/core';
 
 const toolRoutes = new Hono();
 
 // GET /api/tools - 获取所有工具
 toolRoutes.get('/', async (c) => {
-  const registry = getUnifiedToolRegistry();
+  const registry = getToolRegistry();
   const tools = registry.list();
   const groups = registry.listGroups();
   
@@ -19,7 +19,7 @@ toolRoutes.get('/', async (c) => {
 // GET /api/tools/:name - 获取单个工具
 toolRoutes.get('/:name', async (c) => {
   const name = c.req.param('name');
-  const registry = getUnifiedToolRegistry();
+  const registry = getToolRegistry();
   const tool = registry.get(name);
   
   if (!tool) {
@@ -31,7 +31,7 @@ toolRoutes.get('/:name', async (c) => {
 
 // GET /api/tools/groups - 获取工具分组
 toolRoutes.get('/groups', async (c) => {
-  const registry = getUnifiedToolRegistry();
+  const registry = getToolRegistry();
   const groups = registry.listGroups();
   
   return c.json(groups);

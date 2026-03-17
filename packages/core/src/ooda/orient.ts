@@ -237,11 +237,13 @@ export class Orienter {
     const streamOptions: StreamOptions = {
       systemPrompt,
       history,
-      maxTokens: 100,
+      maxTokens: 1500,  // 增加 token 数量以确保返回完整 JSON
       onToken: (token) => {
         fullResponse += token;
       },
     };
+    
+    console.log(`[Orienter] LLM prompt length: ${userPrompt.length}, maxTokens: 1500`);
     
     for await (const token of llmService.stream(userPrompt, streamOptions)) {
       // 每个 token 都实时推送（可以按需节流）
@@ -275,8 +277,25 @@ export class Orienter {
     const response = await llmService.generate(userPrompt, {
       systemPrompt,
       history,
-      maxTokens: 100,  // 本地模型限制，意图分析不需要太长
+      maxTokens: 1500,  // 增加 token 数量以确保返回完整 JSON
+    }).catch(err => {
+      console.error('[Orient] LLM调用失败:', err.message);
+      // 返回一个模拟响应，避免完全失败
+      return { text: '', error: err.message };
     });
+    
+    // 检查是否有错误
+    if (response.error) {
+      console.warn('[Orient] LLM返回错误:', response.error);
+    }
+    
+    console.log(`[Orient] LLM response length: ${response.text?.length || 0}, text: ${response.text?.slice(0, 200)}`);
+    
+    // 如果响应为空，使用 fallback
+    if (!response.text || response.text.trim().length === 0) {
+      console.warn('[Orient] LLM返回空响应，使用fallback');
+      return this.fallbackAnalysis(observation);
+    }
     
     return this.parseAnalysisResult(response.text, observation);
   }
@@ -457,9 +476,13 @@ ${relevantFacts}
   }
 
   private parseAnalysisResult(response: string, observation: Observation): AnalysisResult {
+    // 记录原始响应以便调试
+    console.log(`[Orient] parseAnalysisResult received response: "${response?.slice(0, 300)}..."`);
+    
     try {
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
+        console.log(`[Orient] JSON match found: "${jsonMatch[0].slice(0, 200)}..."`);
         const parsed = JSON.parse(jsonMatch[0]);
         return {
           intentType: parsed.intentType || 'general',
@@ -471,11 +494,14 @@ ${relevantFacts}
           assumptions: parsed.assumptions || [],
           risks: parsed.risks || [],
         };
+      } else {
+        console.warn('[Orient] No JSON found in LLM response, response:', response?.slice(0, 500));
       }
     } catch (e) {
-      console.warn('[Orient] Failed to parse LLM response:', e);
+      console.warn('[Orient] Failed to parse LLM response:', e, 'Response:', response?.slice(0, 500));
     }
     
+    console.log('[Orient] Falling back to keyword matching...');
     return this.fallbackAnalysis(observation);
   }
 

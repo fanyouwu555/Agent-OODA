@@ -92,6 +92,21 @@ const TOOL_REGISTRY: Record<KnowledgeGapType, ToolMetadata[]> = {
       description: '搜索代码中的内容',
     },
   ],
+  // 新增：新闻摘要类型
+  [KnowledgeGapType.NEWS_SUMMARY]: [
+    {
+      name: 'web_search',
+      category: 'search',
+      keywords: ['news', '新闻', '摘要', 'summary', '今日', '今天', '热点'],
+      description: '搜索新闻并生成摘要',
+    },
+    {
+      name: 'web_search_and_fetch',
+      category: 'fetch',
+      keywords: ['news', '新闻', '详细', '完整'],
+      description: '搜索新闻并获取详细内容',
+    },
+  ],
   [KnowledgeGapType.CLARIFICATION]: [],
   [KnowledgeGapType.NONE]: [],
 };

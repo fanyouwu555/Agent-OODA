@@ -8,20 +8,20 @@ import {
   normalizeSkillConfig,
   DEFAULT_AGENT_CONFIG
 } from './interface';
-import { UnifiedToolRegistry } from '../tool/interface';
-import { EnhancedPermissionManager } from '../permission/enhanced';
+import { ToolRegistry } from '../tool/interface';
+import { PermissionManager } from '../permission';
 
 export class AgentRegistryImpl implements AgentRegistry {
   private agents: Map<string, AgentInstance> = new Map();
   private templates: Map<string, Partial<AgentConfigV2>> = new Map();
   private defaultAgentName: string;
-  private toolRegistry: UnifiedToolRegistry | null = null;
-  private permissionManager: EnhancedPermissionManager | null = null;
+  private toolRegistry: ToolRegistry | null = null;
+  private permissionManager: PermissionManager | null = null;
 
   constructor(
     config?: AgentsConfig,
-    toolRegistry?: UnifiedToolRegistry,
-    permissionManager?: EnhancedPermissionManager
+    toolRegistry?: ToolRegistry,
+    permissionManager?: PermissionManager
   ) {
     this.defaultAgentName = config?.default || 'build';
     this.toolRegistry = toolRegistry || null;
@@ -40,11 +40,11 @@ export class AgentRegistryImpl implements AgentRegistry {
     }
   }
 
-  setToolRegistry(registry: UnifiedToolRegistry): void {
+  setToolRegistry(registry: ToolRegistry): void {
     this.toolRegistry = registry;
   }
 
-  setPermissionManager(manager: EnhancedPermissionManager): void {
+  setPermissionManager(manager: PermissionManager): void {
     this.permissionManager = manager;
   }
 

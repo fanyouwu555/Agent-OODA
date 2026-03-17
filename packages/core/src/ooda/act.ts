@@ -1,10 +1,18 @@
 // packages/core/src/ooda/act.ts
 import { Decision, Action, ActionResult, ActionFeedback, FallbackStrategy } from '../types';
-import { UnifiedToolRegistryImpl } from '../tool/registry';
+import { ToolRegistryImpl, getToolRegistry } from '../tool/registry';
+import type { ToolRegistry } from '../tool/interface';
 import { SkillContext } from '../skill/interface';
 import { getSkillRegistry } from '../skill/registry';
 import { getMCPService } from '../mcp/service';
-import { getPermissionManager, PermissionMode } from '../permission';
+import { 
+  getPermissionManager,
+  PermissionManagerImpl 
+} from '../permission';
+import type { PermissionManager } from '../permission';
+import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
+import { getLLMStrategyDecider } from './llm-strategy';
 
 /**
  * 重试配置
@@ -25,20 +33,24 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
 
 export class Actor {
   private sessionId: string;
-  private toolRegistry: UnifiedToolRegistryImpl;
+  private toolRegistry: ToolRegistry;
   private skillRegistry = getSkillRegistry();
   private mcp = getMCPService();
   private permissionManager = getPermissionManager();
+  private agentName: string;  // 从配置获取
   private retryConfig: RetryConfig;
   
   constructor(
     sessionId: string, 
-    toolRegistry?: UnifiedToolRegistryImpl,
-    retryConfig?: Partial<RetryConfig>
+    toolRegistry?: ToolRegistry,
+    retryConfig?: Partial<RetryConfig>,
+    agentName?: string  // 新增参数
   ) {
     this.sessionId = sessionId;
-    this.toolRegistry = toolRegistry || new UnifiedToolRegistryImpl();
+    // 使用全局工具注册表，如果没有传入
+    this.toolRegistry = toolRegistry || getToolRegistry();
     this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
+    this.agentName = agentName || 'default';
   }
 
   async act(decision: Decision): Promise<ActionResult> {
@@ -53,7 +65,7 @@ export class Actor {
       const result = await this.executeWithRetry(action, fallbackStrategy);
       
       const sideEffects = this.identifySideEffects(action, result);
-      const feedback = this.generateFeedback(action, result, decision);
+      const feedback = await this.generateFeedback(action, result, decision);
       const executionTime = Date.now() - startTime;
       
       await this.publishActionResult(action, result, executionTime, false);
@@ -157,6 +169,13 @@ export class Actor {
   }
   
   /**
+   * 数组去重
+   */
+  private deduplicateArray(arr: string[]): string[] {
+    return [...new Set(arr)];
+  }
+  
+  /**
    * 应用降级策略
    */
   private applyFallbackStrategy(
@@ -251,7 +270,11 @@ export class Actor {
     const toolName = action.toolName!;
     const args = action.args!;
     
-    const permissionResult = await this.permissionManager.requestPermission(toolName, args);
+    const permissionResult = await this.permissionManager.checkPermission(
+      toolName,
+      this.agentName,
+      { input: args }
+    );
     
     if (!permissionResult.allowed) {
       await this.mcp.publishError('tool.permission_denied', new Error(permissionResult.message));
@@ -315,7 +338,11 @@ export class Actor {
     const skillName = action.toolName!;
     const args = action.args!;
     
-    const permissionResult = await this.permissionManager.requestPermission(skillName, args);
+    const permissionResult = await this.permissionManager.checkPermission(
+      skillName,
+      this.agentName,
+      { input: args }
+    );
     
     if (!permissionResult.allowed) {
       await this.mcp.publishError('skill.permission_denied', new Error(permissionResult.message));
@@ -450,7 +477,7 @@ export class Actor {
     return sideEffects;
   }
 
-  private generateFeedback(action: Action, result: unknown, decision: Decision): ActionFeedback {
+  private async generateFeedback(action: Action, result: unknown, decision: Decision): Promise<ActionFeedback> {
     const feedback: ActionFeedback = {
       observations: [],
       newInformation: [],
@@ -484,10 +511,18 @@ export class Actor {
           
           const resultData = result as any;
           if (resultData.result) {
-            const resultStr = typeof resultData.result === 'string' 
-              ? resultData.result 
-              : JSON.stringify(resultData.result).slice(0, 200);
-            feedback.newInformation.push(`结果摘要: ${resultStr}...`);
+            // 如果是搜索结果，添加更多详情
+            if (action.toolName === 'web_search' && Array.isArray(resultData.result.results)) {
+              const results = resultData.result.results;
+              for (const r of results.slice(0, 3)) {
+                feedback.newInformation.push(`- ${r.title}: ${r.url}`);
+              }
+            } else {
+              const resultStr = typeof resultData.result === 'string' 
+                ? resultData.result 
+                : JSON.stringify(resultData.result).slice(0, 500);
+              feedback.newInformation.push(`结果: ${resultStr}`);
+            }
           }
           
           const heuristicFeedback = this.generateHeuristicSuccessFeedback(action, result);
@@ -497,7 +532,108 @@ export class Actor {
       }
     }
     
+    // 根据策略决定是否使用 LLM
+    const strategyDecider = getLLMStrategyDecider();
+    const hasHeuristicSuggestions = feedback.suggestions.length > 0;
+    const shouldUseLLM = strategyDecider.shouldUseLLMForAct({
+      action,
+      result,
+      isError: this.isErrorResult(result),
+      hasHeuristicSuggestions,
+      decision,
+    });
+    
+    if (shouldUseLLM) {
+      console.log('[Act] 使用 LLM 进行深度反馈');
+      // 使用 LLM 进行深度反馈分析
+      const llmFeedback = await this.generateFeedbackWithLLM(action, result, decision, feedback);
+      
+      // 合并 LLM 反馈结果（去重）
+      if (llmFeedback) {
+        feedback.observations = this.deduplicateArray([...feedback.observations, ...llmFeedback.observations]);
+        feedback.newInformation = this.deduplicateArray([...feedback.newInformation, ...llmFeedback.newInformation]);
+        feedback.issues = this.deduplicateArray([...feedback.issues, ...llmFeedback.issues]);
+        feedback.suggestions = this.deduplicateArray([...feedback.suggestions, ...llmFeedback.suggestions]);
+      }
+    } else {
+      console.log('[Act] 使用启发式反馈（跳过 LLM）');
+    }
+    
     return feedback;
+  }
+  
+  /**
+   * 使用 LLM 生成深度反馈
+   */
+  private async generateFeedbackWithLLM(
+    action: Action, 
+    result: unknown, 
+    decision: Decision,
+    existingFeedback: ActionFeedback
+  ): Promise<ActionFeedback | null> {
+    try {
+      const llm = getLLMService();
+      
+      const resultStr = typeof result === 'string' 
+        ? result 
+        : JSON.stringify(result).slice(0, 2000);
+      
+      const isError = this.isErrorResult(result);
+      
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `你是一个专业的执行反馈助手。你的职责是分析工具执行结果，生成有价值的反馈和建议。
+
+分析维度：
+1. 结果评估 - 执行是否成功、结果是否符合预期
+2. 信息提取 - 从结果中提取关键信息
+3. 问题诊断 - 分析潜在问题和建议
+4. 后续建议 - 下一步应该做什么
+
+输出要求：
+- 用 JSON 格式输出反馈结果
+- 包含字段：observations（观察）、newInformation（新信息）、issues（问题）、suggestions（建议）
+- 如果没有问题或建议，输出空数组`
+        },
+        {
+          role: 'user',
+          content: `任务目标：${decision.problemStatement}
+
+执行的动作：
+- 类型：${action.type}
+- 工具：${action.toolName || 'N/A'}
+- 参数：${JSON.stringify(action.args || {}).slice(0, 500)}
+
+执行结果：${isError ? '失败 - ' + resultStr : '成功'}
+
+现有反馈：
+- 观察：${existingFeedback.observations.join('; ') || '无'}
+- 问题：${existingFeedback.issues.join('; ') || '无'}
+- 建议：${existingFeedback.suggestions.join('; ') || '无'}
+
+请生成深度反馈（JSON 格式）：`
+        }
+      ];
+      
+      const llmResult = await llm.chat(messages);
+      const content = llmResult.text || '';
+      
+      // 解析 JSON 结果
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          observations: parsed.observations || [],
+          newInformation: parsed.newInformation || [],
+          issues: parsed.issues || [],
+          suggestions: parsed.suggestions || []
+        };
+      }
+    } catch (error) {
+      console.error('[Act] LLM 反馈生成失败:', error);
+    }
+    return null;
   }
 
   /**
@@ -617,10 +753,16 @@ export class Actor {
       }
       
       // 搜索成功
-      if (action.toolName === 'search_web') {
+      if (action.toolName === 'web_search' || action.toolName === 'search_web') {
         const results = resultData?.result;
         if (Array.isArray(results)) {
           observations.push(`搜索完成，找到 ${results.length} 个结果`);
+          
+          // 添加搜索结果摘要
+          const summary = results.slice(0, 3).map((r: any) => r.title || r.url).join('; ');
+          if (summary) {
+            newInformation.push(`热门结果: ${summary}`);
+          }
         }
       }
     }

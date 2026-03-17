@@ -17,8 +17,8 @@ import { apiRateLimit } from './middleware/rate-limit';
 import { requestLogger } from './middleware/logger';
 import { logger } from './utils/logger';
 import { detailedLogger } from './utils/detailed-logger';
-import { initializeSkills } from '@ooda-agent/tools';
-import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult } from '@ooda-agent/core';
+import { initializeSkills, initializeTools } from '@ooda-agent/tools';
+import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
 import { createStorage } from '@ooda-agent/storage';
 import { createServer } from 'node:http';
@@ -153,6 +153,11 @@ async function main() {
   logger.info('Memory', 'Default persona loaded');
 
   const mcp = getMCPService();
+
+  // 初始化工具并注册到 core 的 UnifiedToolRegistry
+  const toolsRegistry = initializeTools();
+  setToolRegistry(toolsRegistry as any);
+  logger.info('Tools', `Registered tools: ${toolsRegistry.list().join(', ')}`);
 
   mcp.subscribe('agent.response', (message) => {
     const payload = message.payload as { content?: string; sessionId?: string };

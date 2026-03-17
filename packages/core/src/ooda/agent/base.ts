@@ -3,29 +3,28 @@
 
 import { OODAAgentConfig, AgentInput, AgentOutput } from '../types';
 import { LLMService } from '../../llm/service';
-import { getUnifiedToolRegistry } from '../../tool/registry';
-import type { UnifiedToolRegistry } from '../../tool/interface';
+import { getToolRegistry } from '../../tool/registry';
+import type { ToolRegistry } from '../../tool/interface';
 import { getSkillRegistry } from '../../skill/registry';
 import type { SkillRegistry } from '../../skill/interface';
-import { getEnhancedPermissionManager } from '../../permission/enhanced-manager';
-import type { EnhancedPermissionManager } from '../../permission/enhanced';
+import { getPermissionManager, PermissionManager } from '../../permission';
 import { PermissionMode } from '../../permission';
 import { getSessionMemory } from '../../memory';
 
 export interface AgentDependencies {
   llmService: LLMService;
-  toolRegistry?: UnifiedToolRegistry;
+  toolRegistry?: ToolRegistry;
   skillRegistry?: SkillRegistry;
-  permissionManager?: EnhancedPermissionManager;
+  permissionManager?: PermissionManager;
 }
 
 export abstract class BaseOODAAgent {
   protected config: OODAAgentConfig;
   protected sessionId: string;
   protected llmService: LLMService;
-  protected toolRegistry: UnifiedToolRegistry;
+  protected toolRegistry: ToolRegistry;
   protected skillRegistry: SkillRegistry;
-  protected permissionManager: EnhancedPermissionManager;
+  protected permissionManager: PermissionManager;
   protected sessionMemory: ReturnType<typeof getSessionMemory>;
 
   constructor(
@@ -36,9 +35,9 @@ export abstract class BaseOODAAgent {
     this.config = config;
     this.sessionId = sessionId;
     this.llmService = dependencies.llmService;
-    this.toolRegistry = dependencies.toolRegistry || getUnifiedToolRegistry();
+    this.toolRegistry = dependencies.toolRegistry || getToolRegistry();
     this.skillRegistry = dependencies.skillRegistry || getSkillRegistry();
-    this.permissionManager = dependencies.permissionManager || getEnhancedPermissionManager();
+    this.permissionManager = dependencies.permissionManager || getPermissionManager();
     this.sessionMemory = getSessionMemory(sessionId);
   }
 

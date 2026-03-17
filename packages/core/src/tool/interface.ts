@@ -36,7 +36,7 @@ export interface ToolRegistryConfig {
   groups?: Record<string, ToolGroup>;
 }
 
-export interface UnifiedToolRegistry {
+export interface ToolRegistry {
   registerTool(tool: UnifiedTool): void;
   registerSkill(skill: UnifiedTool): void;
   registerMCPTool(tool: UnifiedTool, serverName: string): void;

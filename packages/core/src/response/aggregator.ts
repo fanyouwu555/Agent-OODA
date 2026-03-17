@@ -1,5 +1,6 @@
 import type { Pattern } from '../pattern/types';
 import type { Action, Decision, Orientation, Observation } from '../types';
+import { getLLMService } from '../llm/service';
 
 export type OODAPhase = 'observe' | 'orient' | 'decide' | 'act' | 'learn';
 
@@ -112,6 +113,27 @@ export class ResponseAggregator {
 
     if (actionResult?.result) {
       const result = actionResult.result as { result?: unknown; content?: string };
+      
+      // 检查是否需要生成新闻摘要
+      const needsSummary = decision?.nextAction?.args?.['summarize'] === true;
+      
+      if (needsSummary && result.result) {
+        // 异步生成摘要（不阻塞返回）
+        this.generateNewsSummary(result.result, decision.nextAction.args)
+          .then(summary => {
+            if (summary) {
+              // 可以通过事件或其他方式更新内容
+              console.log('[ResponseAggregator] Generated news summary');
+            }
+          })
+          .catch(err => {
+            console.warn('[ResponseAggregator] Failed to generate summary:', err);
+          });
+        
+        // 先返回处理中的提示，实际摘要会通过流式返回
+        return this.formatSearchResultsAsSummary(result.result);
+      }
+      
       if (typeof result.result === 'string') {
         return result.result;
       }
@@ -129,6 +151,94 @@ export class ResponseAggregator {
     }
 
     return '任务完成';
+  }
+
+  /**
+   * 将搜索结果格式化为新闻摘要
+   */
+  private formatSearchResultsAsSummary(result: unknown): string {
+    // 提取搜索结果中的标题和摘要
+    const searchResults = this.extractSearchResults(result);
+    
+    if (searchResults.length === 0) {
+      return '未找到相关新闻结果';
+    }
+    
+    // 格式化为新闻摘要样式
+    const lines: string[] = ['📰 今日新闻摘要:\n'];
+    
+    for (let i = 0; i < Math.min(searchResults.length, 5); i++) {
+      const item = searchResults[i];
+      lines.push(`${i + 1}. ${item.title}`);
+      if (item.snippet) {
+        lines.push(`   ${item.snippet.slice(0, 100)}...`);
+      }
+    }
+    
+    lines.push('\n💡 如需了解详细内容，请告诉我具体想看哪条新闻');
+    
+    return lines.join('\n');
+  }
+
+  /**
+   * 从工具结果中提取搜索结果
+   */
+  private extractSearchResults(result: unknown): Array<{title: string; url: string; snippet: string}> {
+    try {
+      // 处理各种可能的格式
+      const data = result as { results?: unknown[]; result?: unknown[] };
+      const results = data.results || data.result || [];
+      
+      return results.map((item: unknown) => {
+        const r = item as { title?: string; url?: string; snippet?: string };
+        return {
+          title: r.title || '无标题',
+          url: r.url || '',
+          snippet: r.snippet || '',
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 使用 LLM 生成新闻摘要
+   */
+  private async generateNewsSummary(
+    result: unknown, 
+    args?: Record<string, unknown>
+  ): Promise<string | null> {
+    const searchResults = this.extractSearchResults(result);
+    
+    if (searchResults.length === 0) {
+      return null;
+    }
+    
+    try {
+      const llm = await getLLMService();
+      
+      const summaryStyle = args?.['summaryStyle'] || 'bullet';
+      const maxItems = args?.['maxItems'] || 5;
+      
+      const prompt = `请根据以下新闻搜索结果，生成一个简洁的今日新闻摘要：
+
+${searchResults.slice(0, 10).map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}`).join('\n')}
+
+要求：
+1. 提取最重要的 ${maxItems} 条新闻
+2. 用${summaryStyle === 'bullet' ? '要点式' : '段落式'}格式呈现
+3. 每条新闻用一句话概括
+4. 按重要性排序
+
+请直接输出摘要，不要有其他内容。`;
+      
+      const response = await llm.generate(prompt, { maxTokens: 500 });
+      return response.text || null;
+    } catch (err) {
+      console.warn('[ResponseAggregator] LLM summary generation failed:', err);
+      return null;
+    }
   }
 
   private extractReasoning(

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS } from '@ooda-agent/core';
-import { ToolRegistry, readFileTool, writeFileTool, runBashTool, webSearchTool, webFetchTool, webSearchAndFetchTool, listDirectoryTool, deleteFileTool, grepTool, globTool, initializeTools } from '@ooda-agent/tools';
+import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS, getToolRegistry } from '@ooda-agent/core';
+import { initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import { detailedLogger } from '../utils/detailed-logger';
 import { eventBus } from './events';
@@ -38,8 +38,6 @@ const pendingConfirmations = new Map<string, {
   resolve: (allowed: boolean) => void;
   sessionId: string;
 }>();
-
-const toolRegistry = initializeTools();
 
 function publishToSession(sessionId: string, namespace: string, action: string, payload: unknown) {
   eventBus.publish({
@@ -293,10 +291,17 @@ sessionRoutes
               }
               break;
             case 'complete':
-              // OODA 循环完成，内容已在 act 阶段流式发送
+              // OODA 循环完成，发送最终输出
               const eventDataComplete = event.data as { output?: string } | undefined;
               const outputComplete = eventDataComplete?.output || '';
               console.log(`[DEBUG] complete event, output length: ${outputComplete.length}`);
+              
+              // 发送完成事件，包含最终输出内容
+              await sendEvent('content', { 
+                content: outputComplete,
+                isComplete: true
+              });
+              
               detailedLogger.logOODAComplete(sessionId, outputComplete, { metadata: oodaMetadata });
               break;
           }

@@ -1,5 +1,4 @@
 // packages/tools/src/index.ts
-export * from './registry';
 export * from './base-tool';
 export * from './web-tools';
 export * from './utility-tools';
@@ -8,7 +7,6 @@ export * from './skills/base-skill';
 export * from './skills/advanced-skills';
 export { context7Tool, grepAppTool, webSearchTool as mcpWebSearchTool, webFetchTool as mcpWebFetchTool, initializeMCPTools } from './mcp-tools';
 
-import { ToolRegistry } from './registry';
 import { 
   readFileTool, 
   writeFileTool, 
@@ -48,38 +46,43 @@ import {
   APITestSkill, 
   DatabaseQuerySkill 
 } from './skills/advanced-skills';
-import { getSkillRegistry } from '@ooda-agent/core';
+import { getSkillRegistry, getToolRegistry, ToolRegistry, UnifiedTool } from '@ooda-agent/core';
 
+/**
+ * 初始化工具并注册到核心的 ToolRegistry
+ * 返回已注册的 ToolRegistry 实例
+ */
 export function initializeTools(): ToolRegistry {
-  const registry = new ToolRegistry();
+  const registry = getToolRegistry();
   
-  registry.register(readFileTool);
-  registry.register(writeFileTool);
-  registry.register(runBashTool);
-  registry.register(listDirectoryTool);
-  registry.register(deleteFileTool);
-  registry.register(grepTool);
-  registry.register(globTool);
-  registry.register(getTimeTool);
+  // 注册工具 - 使用类型断言兼容 Tool 和 UnifiedTool
+  registry.registerTool(readFileTool as unknown as UnifiedTool);
+  registry.registerTool(writeFileTool as unknown as UnifiedTool);
+  registry.registerTool(runBashTool as unknown as UnifiedTool);
+  registry.registerTool(listDirectoryTool as unknown as UnifiedTool);
+  registry.registerTool(deleteFileTool as unknown as UnifiedTool);
+  registry.registerTool(grepTool as unknown as UnifiedTool);
+  registry.registerTool(globTool as unknown as UnifiedTool);
+  registry.registerTool(getTimeTool as unknown as UnifiedTool);
   
-  registry.register(webSearchTool);
-  registry.register(webFetchTool);
-  registry.register(webSearchAndFetchTool);
+  registry.registerTool(webSearchTool as unknown as UnifiedTool);
+  registry.registerTool(webFetchTool as unknown as UnifiedTool);
+  registry.registerTool(webSearchAndFetchTool as unknown as UnifiedTool);
   
-  registry.register(calculatorTool);
-  registry.register(weatherTool);
-  registry.register(translateTool);
-  registry.register(timerTool);
-  registry.register(currencyTool);
-  registry.register(uuidTool);
-  registry.register(base64Tool);
-  registry.register(hashTool);
-  registry.register(randomNumberTool);
-  registry.register(colorTool);
+  registry.registerTool(calculatorTool as unknown as UnifiedTool);
+  registry.registerTool(weatherTool as unknown as UnifiedTool);
+  registry.registerTool(translateTool as unknown as UnifiedTool);
+  registry.registerTool(timerTool as unknown as UnifiedTool);
+  registry.registerTool(currencyTool as unknown as UnifiedTool);
+  registry.registerTool(uuidTool as unknown as UnifiedTool);
+  registry.registerTool(base64Tool as unknown as UnifiedTool);
+  registry.registerTool(hashTool as unknown as UnifiedTool);
+  registry.registerTool(randomNumberTool as unknown as UnifiedTool);
+  registry.registerTool(colorTool as unknown as UnifiedTool);
   
   // 注册 Git 工具
   for (const tool of gitTools) {
-    registry.register(tool);
+    registry.registerTool(tool as unknown as UnifiedTool);
   }
   
   return registry;

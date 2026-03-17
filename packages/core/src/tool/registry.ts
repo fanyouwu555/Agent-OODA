@@ -1,20 +1,20 @@
 import {
   UnifiedTool,
-  UnifiedToolRegistry,
+  ToolRegistry,
   ToolGroup,
   ToolType,
   toolNameMatches
 } from './interface';
 import { ExecutionContext } from '../types';
 import { PermissionMode } from '../permission';
-import { EnhancedPermissionManager } from '../permission/enhanced';
+import { PermissionManager } from '../permission';
 
-export class UnifiedToolRegistryImpl implements UnifiedToolRegistry {
+export class ToolRegistryImpl implements ToolRegistry {
   private tools: Map<string, UnifiedTool> = new Map();
   private groups: Map<string, ToolGroup> = new Map();
-  private permissionManager: EnhancedPermissionManager | null = null;
+  private permissionManager: PermissionManager | null = null;
 
-  setPermissionManager(manager: EnhancedPermissionManager): void {
+  setPermissionManager(manager: PermissionManager): void {
     this.permissionManager = manager;
   }
 
@@ -223,21 +223,21 @@ export class PermissionDeniedError extends Error {
   }
 }
 
-let toolRegistry: UnifiedToolRegistryImpl | null = null;
+let toolRegistry: ToolRegistryImpl | null = null;
 
-export function getUnifiedToolRegistry(): UnifiedToolRegistry {
+export function getToolRegistry(): ToolRegistry {
   if (!toolRegistry) {
-    toolRegistry = new UnifiedToolRegistryImpl();
+    toolRegistry = new ToolRegistryImpl();
   }
   return toolRegistry;
 }
 
-export function setUnifiedToolRegistry(
-  registry: UnifiedToolRegistryImpl
+export function setToolRegistry(
+  registry: ToolRegistryImpl
 ): void {
   toolRegistry = registry;
 }
 
-export function createUnifiedToolRegistry(): UnifiedToolRegistryImpl {
-  return new UnifiedToolRegistryImpl();
+export function createToolRegistry(): ToolRegistryImpl {
+  return new ToolRegistryImpl();
 }

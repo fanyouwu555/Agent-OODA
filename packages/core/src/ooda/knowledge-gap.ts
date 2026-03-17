@@ -11,6 +11,8 @@ export enum KnowledgeGapType {
   REALTIME_INFO = 'realtime_info',
   /** 需要网络搜索 - 查找资料、文档等 */
   WEB_SEARCH = 'web_search',
+  /** 需要新闻摘要 - 总结新闻内容 */
+  NEWS_SUMMARY = 'news_summary',
   /** 需要文件内容 - 读取代码、配置等 */
   FILE_CONTENT = 'file_content',
   /** 需要执行命令 - 运行脚本、获取系统信息等 */
@@ -52,6 +54,11 @@ export interface KnowledgeGapDetectorConfig {
     zh: string[];
     en: string[];
   };
+  /** 新闻摘要关键词 - 用于区分新闻内容 vs 新闻网站 */
+  newsSummaryKeywords: {
+    zh: string[];
+    en: string[];
+  };
   /** 需要文件内容的关键词 */
   fileKeywords: {
     zh: string[];
@@ -82,6 +89,11 @@ const DEFAULT_CONFIG: KnowledgeGapDetectorConfig = {
   searchKeywords: {
     zh: ['搜索', '查找', '查询', '如何', '怎么', '什么', '教程', '方法', '解决', '原因', '哪个', '哪些'],
     en: ['search', 'find', 'how', 'what', 'why', 'where', 'which', 'tutorial', 'method', 'solution', 'explain'],
+  },
+  // 新增：新闻摘要关键词 - 区分用户是要新闻内容还是新闻网站
+  newsSummaryKeywords: {
+    zh: ['新闻摘要', '今日新闻', '国内新闻', '发生了什么', '有哪些新闻', '新闻汇总', '今日要闻', '要闻', '热点', '头条'],
+    en: ['news summary', 'what happened', 'latest news', 'today news', 'top news', 'headlines', 'breaking news'],
   },
   fileKeywords: {
     zh: ['读取', '查看', '打开', '文件', '代码', '内容', '配置'],
@@ -123,31 +135,37 @@ export class KnowledgeGapDetector {
       gaps.push(commandGap);
     }
 
-    // 2. 检测是否需要实时信息
+    // 2. 检测是否需要新闻摘要（高优先级，需要区分新闻内容 vs 新闻网站）
+    const newsSummaryGap = this.detectNewsSummary(userInput);
+    if (newsSummaryGap) {
+      gaps.push(newsSummaryGap);
+    }
+
+    // 3. 检测是否需要实时信息
     const realtimeGap = this.detectRealtimeInfo(userInput);
     if (realtimeGap) {
       gaps.push(realtimeGap);
     }
 
-    // 3. 检测是否需要网络搜索
+    // 4. 检测是否需要网络搜索
     const searchGap = this.detectWebSearch(userInput, observation);
     if (searchGap) {
       gaps.push(searchGap);
     }
 
-    // 4. 检测是否需要文件内容（排在命令检测之后）
+    // 5. 检测是否需要文件内容（排在命令检测之后）
     const fileGap = this.detectFileContent(userInput);
     if (fileGap) {
       gaps.push(fileGap);
     }
 
-    // 5. 检测是否需要代码分析
+    // 6. 检测是否需要代码分析
     const codeGap = this.detectCodeAnalysis(userInput);
     if (codeGap) {
       gaps.push(codeGap);
     }
 
-    // 6. 如果没有任何缺口，返回 NONE
+    // 7. 如果没有任何缺口，返回 NONE
     if (gaps.length === 0) {
       gaps.push({
         type: KnowledgeGapType.NONE,
@@ -168,6 +186,7 @@ export class KnowledgeGapDetector {
     // 优先级权重
     const priorityWeight: Record<KnowledgeGapType, number> = {
       [KnowledgeGapType.COMMAND_EXEC]: 0.3,      // 最高优先级
+      [KnowledgeGapType.NEWS_SUMMARY]: 0.25,     // 新闻摘要高优先级
       [KnowledgeGapType.REALTIME_INFO]: 0.2,
       [KnowledgeGapType.FILE_CONTENT]: 0.15,
       [KnowledgeGapType.WEB_SEARCH]: 0.1,
@@ -208,6 +227,78 @@ export class KnowledgeGapDetector {
         suggestedTool: 'web_search',
         suggestedArgs: { query: userInput, limit: 5 },
         triggerKeywords: matchedKeywords,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * 检测是否需要新闻摘要 - 区分新闻内容 vs 新闻网站
+   * 这是关键改进：用户说"今天有什么新闻"时，应该返回新闻摘要而不是网站链接
+   */
+  private detectNewsSummary(userInput: string): DetectedKnowledgeGap | null {
+    const input = userInput.toLowerCase();
+    const keywords = [...this.config.newsSummaryKeywords.zh, ...this.config.newsSummaryKeywords.en];
+    
+    const matchedKeywords = keywords.filter(kw => input.includes(kw.toLowerCase()));
+    
+    // 检测新闻相关的意图模式
+    const newsIntentPatterns = [
+      // 中文模式
+      /.*新闻.*/i,           // 任何包含"新闻"的请求
+      /.*今天.*/i,           // "今天"相关
+      /.*发生.*/i,          // "发生了什么"
+      /.*热点.*/i,          // "热点"
+      /.*头条.*/i,          // "头条"
+      // 英文模式
+      /.*news$/i,           // 以 news 结尾
+      /.*today.*/i,         // today 相关
+      /what happened/i,     // 发生了什么
+      /latest.*/i,          // 最新
+    ];
+    
+    const hasNewsIntent = newsIntentPatterns.some(pattern => pattern.test(input));
+    
+    // 检测是否明确要求获取内容（而不是网站列表）
+    const contentIndicators = [
+      '有哪些', '有什么', '汇总', '摘要', '总结', '内容', 
+      'what happened', 'summary', 'headlines'
+    ];
+    const wantsContent = contentIndicators.some(indicator => input.includes(indicator));
+    
+    // 如果匹配新闻摘要关键词 或 有新闻意图且想要内容
+    if (matchedKeywords.length > 0 || (hasNewsIntent && wantsContent)) {
+      // 高置信度：因为明确是新闻摘要请求
+      const confidence = matchedKeywords.length > 0 
+        ? Math.min(0.7 + matchedKeywords.length * 0.1, 0.95)
+        : 0.75;
+      
+      // 关键改进：suggestedTool 使用特殊的处理标识
+      // 这告诉后续系统不只是搜索，还要生成摘要
+      return {
+        type: KnowledgeGapType.NEWS_SUMMARY,
+        description: `需要新闻摘要（检测到关键词: ${matchedKeywords.join(', ')}）`,
+        confidence,
+        suggestedTool: 'web_search_with_summary',  // 特殊标识：搜索+摘要
+        suggestedArgs: { 
+          query: userInput, 
+          limit: 10,  // 增加 limit 以获取更多结果
+          summarize: true  // 标识需要生成摘要
+        },
+        triggerKeywords: matchedKeywords,
+      };
+    }
+    
+    // 如果只是简单的"新闻"关键词，但没有明确的内容需求
+    if (hasNewsIntent && matchedKeywords.length === 0) {
+      return {
+        type: KnowledgeGapType.REALTIME_INFO,
+        description: `需要实时新闻信息`,
+        confidence: 0.65,
+        suggestedTool: 'web_search',
+        suggestedArgs: { query: userInput, limit: 5 },
+        triggerKeywords: ['新闻'],
       };
     }
 

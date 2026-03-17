@@ -111,6 +111,7 @@ const sessionLoopContextManager = new SessionLoopContextManager();
 
 export class OODALoop {
   private sessionId: string;
+  private agentName: string;
   private observer: Observer;
   private orienter: Orienter;
   private decider: Decider;
@@ -137,8 +138,9 @@ export class OODALoop {
   private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
   
-  constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>) {
+  constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>, agentName?: string) {
     this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.agentName = agentName || 'default';
     this.sessionMemory = getSessionMemory(this.sessionId);
     this.hierarchicalMemory = getHierarchicalMemory(this.sessionId);
     this.learningModule = getLearningModule();
@@ -146,7 +148,7 @@ export class OODALoop {
     this.observer = new Observer(this.sessionId);
     this.orienter = new Orienter(this.sessionId);
     this.decider = new Decider();
-    this.actor = new Actor(this.sessionId);
+    this.actor = new Actor(this.sessionId, undefined, undefined, this.agentName);
     
     if (streamingHandler) {
       this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
@@ -344,14 +346,13 @@ export class OODALoop {
     let orientation: Orientation;
     let orientLLMInteraction: LLMInteraction | undefined;
     
-    if (this.thinkingCallback) {
-      const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
-        await this.thinkingCallback!('orient', type, content);
-      };
-      orientation = await this.orienter.orientStream(observation, orientThinkingCallback);
-    } else {
-      orientation = await this.getCachedOrientation(observation);
-    }
+    // 统一使用流式调用，确保完整的推理过程
+    const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
+      if (this.thinkingCallback) {
+        await this.thinkingCallback('orient', type, content);
+      }
+    };
+    orientation = await this.orienter.orientStream(observation, orientThinkingCallback);
     
     const orientDuration = Date.now() - orientStart;
     
@@ -447,14 +448,13 @@ export class OODALoop {
     let decision: Decision;
     let decideLLMInteraction: LLMInteraction | undefined;
     
-    if (this.thinkingCallback) {
-      const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
-        await this.thinkingCallback!('decide', type, content);
-      };
-      decision = await this.decider.decideStream(orientation, decideThinkingCallback);
-    } else {
-      decision = await this.getCachedDecision(orientation);
-    }
+    // 统一使用流式调用，确保完整的推理过程
+    const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
+      if (this.thinkingCallback) {
+        await this.thinkingCallback('decide', type, content);
+      }
+    };
+    decision = await this.decider.decideStream(orientation, decideThinkingCallback);
     
     const decideDuration = Date.now() - decideStart;
     
@@ -731,11 +731,12 @@ export class OODALoop {
         content: actionResult.feedback.observations.join(' '),
         timestamp: Date.now(),
       }],
-      result: isComplete ? {
-        output: actionResult.feedback.observations.join('\n'),
+      result: {
+        // 即使没有完成，也发送反馈内容
+        output: actionResult.feedback.observations.join('\n') || actionResult.feedback.newInformation.join('\n') || '',
         steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
         metadata: { actionResult, cycleContext },
-      } : state.result,
+      },
     };
   }
 

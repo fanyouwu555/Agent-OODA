@@ -3,7 +3,9 @@ import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, A
 import { getSessionMemory, SessionMemory } from '../memory';
 import { BaseOODAAgent, AgentDependencies } from './agent/base';
 import { OODAAgentConfig, AgentInput, AgentOutput, ObserveResult } from './types';
-import { LLMService } from '../llm/service';
+import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
+import { getLLMStrategyDecider } from './llm-strategy';
 
 interface ToolResultData {
   toolName?: string;
@@ -76,15 +78,186 @@ export class Observer {
     
     const allHistory = this.sessionMemory.getShortTerm().getRecentMessages(100);
     
+    // 根据策略决定是否使用 LLM
+    const strategyDecider = getLLMStrategyDecider();
+    const shouldUseLLM = strategyDecider.shouldUseLLMForObserve({
+      state,
+      toolResults,
+      ruleDetectedAnomalies: anomalies.length,
+      toolCount: toolResults.length,
+    });
+    
+    let llmAnomalies: Anomaly[] = [];
+    let llmPatterns: Pattern[] = [];
+    
+    if (shouldUseLLM) {
+      console.log('[Observe] 使用 LLM 进行深度分析');
+      // 使用 LLM 进行深度分析
+      llmAnomalies = await this.detectAnomaliesWithLLM(state, toolResults);
+      llmPatterns = await this.recognizePatternsWithLLM(state, toolResults);
+    } else {
+      console.log('[Observe] 使用规则分析（跳过 LLM）');
+    }
+    
+    // 合并规则和 LLM 分析结果（去重）
+    const uniqueAnomalies = this.deduplicateAnomalies([...anomalies, ...llmAnomalies]);
+    const uniquePatterns = this.deduplicatePatterns([...patterns, ...llmPatterns]);
+    
     return {
       userInput: state.originalInput,
       toolResults,
       context: await this.buildContext(state),
       environment: await this.getEnvironmentState(),
       history: allHistory.length > 0 ? allHistory : state.history,
-      anomalies,
-      patterns,
+      anomalies: uniqueAnomalies,
+      patterns: uniquePatterns,
     };
+  }
+  
+  /**
+   * 去重异常列表
+   */
+  private deduplicateAnomalies(anomalies: Anomaly[]): Anomaly[] {
+    const seen = new Set<string>();
+    return anomalies.filter(a => {
+      const key = `${a.type}:${a.description}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  
+  /**
+   * 去重模式列表
+   */
+  private deduplicatePatterns(patterns: Pattern[]): Pattern[] {
+    const seen = new Set<string>();
+    return patterns.filter(p => {
+      const key = `${p.type}:${p.description}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  
+  /**
+   * 使用 LLM 检测异常
+   */
+  private async detectAnomaliesWithLLM(state: AgentState, toolResults: ToolResult[]): Promise<Anomaly[]> {
+    try {
+      const llm = getLLMService();
+      
+      const toolResultsSummary = toolResults.slice(-5).map(r => 
+        `${r.toolName}: ${r.isError ? 'ERROR' : 'OK'} ${r.executionTime}ms`
+      ).join('\n');
+      
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `你是一个专业的异常检测助手。你的职责是分析当前环境和工具执行结果，检测潜在的异常情况。
+          
+分析维度：
+1. 错误模式 - 工具执行失败、权限问题、超时等
+2. 性能问题 - 执行时间异常长、内存占用高等
+3. 行为模式 - 重复操作、循环调用、不寻常的工具组合
+4. 上下文问题 - 历史对话与当前任务不相关、任务切换过于频繁
+
+输出要求：
+- 用 JSON 数组格式输出检测到的异常
+- 每个异常包含：type（error/warning/pattern）、description、severity（low/medium/high）
+- 如果没有异常，输出空数组 []`
+        },
+        {
+          role: 'user',
+          content: `当前用户输入：${state.originalInput}
+
+最近工具执行结果：
+${toolResultsSummary || '无'}
+
+请分析并输出异常检测结果（JSON 数组）：`
+        }
+      ];
+      
+      const result = await llm.chat(messages);
+      const content = result.text || '';
+      
+      // 解析 JSON 结果
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return parsed.map((a: any) => ({
+          type: a.type || 'warning',
+          description: a.description || '',
+          severity: a.severity || 'low',
+          context: 'LLM 分析',
+          source: 'llm' as const
+        }));
+      }
+    } catch (error) {
+      console.error('[Observe] LLM 异常检测失败:', error);
+    }
+    return [];
+  }
+  
+  /**
+   * 使用 LLM 识别模式
+   */
+  private async recognizePatternsWithLLM(state: AgentState, toolResults: ToolResult[]): Promise<Pattern[]> {
+    try {
+      const llm = getLLMService();
+      
+      const toolSequence = toolResults.map(r => r.toolName).join(' → ');
+      const historySummary = state.history.slice(-10).map(m => 
+        `${m.role}: ${m.content?.substring(0, 100)}`
+      ).join('\n');
+      
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `你是一个专业的模式识别助手。你的职责是分析用户行为和工具使用模式，识别有意义的规律。
+
+分析维度：
+1. 工具使用模式 - 常用工具组合、工具调用顺序
+2. 任务类型模式 - 用户意图的演变、任务完成模式
+3. 交互模式 - 对话风格、偏好设置
+4. 成功/失败模式 - 哪些操作序列更容易成功
+
+输出要求：
+- 用 JSON 数组格式输出识别到的模式
+- 每个模式包含：type、description、significance（0-1之间的数值）
+- 如果没有明显模式，输出空数组 []`
+        },
+        {
+          role: 'user',
+          content: `当前用户输入：${state.originalInput}
+
+工具调用序列：${toolSequence || '无'}
+
+最近对话历史：
+${historySummary}
+
+请分析并输出模式识别结果（JSON 数组）：`
+        }
+      ];
+      
+      const result = await llm.chat(messages);
+      const content = result.text || '';
+      
+      // 解析 JSON 结果
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return parsed.map((p: any) => ({
+          type: p.type || 'behavior',
+          description: p.description || '',
+          significance: typeof p.significance === 'number' ? p.significance : 0.5,
+          source: 'llm' as const
+        }));
+      }
+    } catch (error) {
+      console.error('[Observe] LLM 模式识别失败:', error);
+    }
+    return [];
   }
 
   private async storeToMemory(state: AgentState): Promise<void> {
