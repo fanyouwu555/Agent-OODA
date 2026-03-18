@@ -114,19 +114,31 @@ export class OpenAICompatibleProvider implements LLMProvider {
         
         if (response.status === 429) {
           const errorText = await response.text();
-          console.log(`[OpenAI-Compatible] Rate limited: ${errorText}`);
-          
+          console.log(`[OpenAI-Compatible] Rate limited (attempt ${attempt}/${maxRetries}): ${errorText}`);
+
           if (attempt < maxRetries) {
-            const delay = baseDelay * attempt;
+            const delay = baseDelay * Math.pow(2, attempt - 1); // 指数退避: 2s, 4s, 8s
             console.log(`[OpenAI-Compatible] Retrying in ${delay}ms...`);
             await this.sleep(delay);
             continue;
+          } else {
+            // 最后一次尝试也失败了，抛出友好的错误
+            throw new Error(`API 速率限制: 服务端模型可用容量超过限制，请稍后再试`);
           }
         }
-        
+
         if (!response.ok) {
           const errorText = await response.text();
           console.log(`[OpenAI-Compatible] Error response: ${errorText}`);
+
+          // 对于 5xx 错误也进行重试
+          if (response.status >= 500 && attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt - 1);
+            console.log(`[OpenAI-Compatible] Server error, retrying in ${delay}ms...`);
+            await this.sleep(delay);
+            continue;
+          }
+
           throw new Error(`API error: ${response.status} ${response.statusText}`);
         }
         
@@ -178,37 +190,86 @@ export class OpenAICompatibleProvider implements LLMProvider {
   async *stream(prompt: string, options?: StreamOptions): AsyncGenerator<string> {
     const messages = this.buildMessages(prompt, options);
     const url = `${this.baseUrl}/chat/completions`;
-    
+    const maxRetries = 3;
+    const baseDelay = 2000;
+
     console.log(`[OpenAI-Compatible] Streaming request to ${url}, model: ${this.model}`);
-    
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
-          temperature: options?.temperature ?? this.temperature,
-          max_tokens: options?.maxTokens ?? this.maxTokens,
-          stream: true,
-        }),
-      });
-    } catch (fetchError) {
-      console.error(`[OpenAI-Compatible] Fetch error:`, fetchError);
-      throw new Error(`Failed to connect to LLM service at ${url}: ${fetchError}`);
+
+    let response: Response | undefined;
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[OpenAI-Compatible] POST ${url} (attempt ${attempt}/${maxRetries})`);
+
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages: messages.map(m => ({
+              role: m.role,
+              content: m.content,
+            })),
+            temperature: options?.temperature ?? this.temperature,
+            max_tokens: options?.maxTokens ?? this.maxTokens,
+            stream: true,
+          }),
+        });
+
+        // 处理 429 速率限制错误
+        if (response.status === 429) {
+          const errorText = await response.text();
+          console.log(`[OpenAI-Compatible] Rate limited (attempt ${attempt}/${maxRetries}): ${errorText}`);
+
+          if (attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt - 1); // 指数退避: 2s, 4s, 8s
+            console.log(`[OpenAI-Compatible] Retrying in ${delay}ms...`);
+            await this.sleep(delay);
+            continue;
+          } else {
+            // 最后一次尝试也失败了，抛出友好的错误
+            throw new Error(`API 速率限制: 服务端模型可用容量超过限制，请稍后再试`);
+          }
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[OpenAI-Compatible] API error: ${response.status} ${response.statusText}`, errorText);
+
+          // 对于 5xx 错误也进行重试
+          if (response.status >= 500 && attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt - 1);
+            console.log(`[OpenAI-Compatible] Server error, retrying in ${delay}ms...`);
+            await this.sleep(delay);
+            continue;
+          }
+
+          throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        // 请求成功，跳出重试循环
+        break;
+      } catch (fetchError) {
+        lastError = fetchError as Error;
+
+        // 网络错误也进行重试
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          console.log(`[OpenAI-Compatible] Request failed (attempt ${attempt}), retrying in ${delay}ms...`);
+          await this.sleep(delay);
+        } else {
+          console.error(`[OpenAI-Compatible] Fetch error:`, fetchError);
+          throw new Error(`Failed to connect to LLM service at ${url}: ${fetchError}`);
+        }
+      }
     }
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[OpenAI-Compatible] API error: ${response.status} ${response.statusText}`, errorText);
-      throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText}`);
+
+    if (!response || !response.ok) {
+      throw lastError || new Error('Max retries exceeded');
     }
     
     const reader = response.body?.getReader();

@@ -20,12 +20,14 @@ import { detailedLogger } from './utils/detailed-logger';
 import { initializeSkills, initializeTools } from '@ooda-agent/tools';
 import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry, initializeDataSourceManager } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
+import { getDiagnosticsEngine } from '@ooda-agent/core';
 import { initializeOodaMetrics } from '../../core/src/metrics/ooda-metrics';
 import { createStorage } from '@ooda-agent/storage';
 import { createServer } from 'node:http';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createConnection } from 'node:net';
+import healthRoutes from './routes/health';
 
 async function findAvailablePort(startPort: number, maxAttempts: number = 10): Promise<number> {
   for (let port = startPort; port < startPort + maxAttempts; port++) {
@@ -114,6 +116,21 @@ async function loadConfig() {
 }
 
 async function main() {
+  // 启动时自检
+  console.log('🔍 运行启动自检...');
+  const diagnostics = getDiagnosticsEngine();
+  const diagnosticReport = await diagnostics.runDiagnostics({ autoFix: true });
+
+  if (diagnosticReport.overallStatus === 'critical') {
+    console.error('❌ 启动自检失败，服务器无法启动');
+    console.error('💡 建议: 请检查配置和环境变量');
+    process.exit(1);
+  } else if (diagnosticReport.overallStatus === 'degraded') {
+    console.warn('⚠️  启动自检发现问题，但服务器将继续启动');
+  } else {
+    console.log('✅ 启动自检通过');
+  }
+
   // 校验环境变量
   const validation = validateEnvironment();
   logValidationResult(validation);
@@ -121,7 +138,7 @@ async function main() {
     console.error('[Config] 环境变量校验失败，服务器无法启动');
     process.exit(1);
   }
-  
+
   const appConfig = await loadConfig();
   if (appConfig) {
     initializeConfigManager(appConfig);
@@ -222,10 +239,14 @@ async function main() {
   app.route('/api/logging', loggingRoutes);
   app.route('/api', sessionRoutes);
 
-  app.get('/health', (c) => {
-    logger.debug('Health', 'Health check requested');
-    return c.json({ 
-      status: 'ok', 
+  // 健康检查和诊断路由
+  app.route('/health', healthRoutes);
+
+  // 保持向后兼容的旧健康检查端点
+  app.get('/health/legacy', (c) => {
+    logger.debug('Health', 'Legacy health check requested');
+    return c.json({
+      status: 'ok',
       timestamp: Date.now(),
       skills: 9,
       mcp: 'active',
