@@ -57,3 +57,6 @@ export class ErrorHandler {
 }
 
 export const errorHandler = new ErrorHandler();
+
+// Circuit breaker exports
+export { CircuitBreaker, CircuitBreakerState, CircuitBreakerOptions, CircuitBreakerConfigs } from './circuit-breaker';

@@ -140,6 +140,12 @@ export class OODALoop {
   private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
   
+  // 动态缓存配置
+  private adaptiveCacheEnabled = true;
+  private minTTL = 30000;    // 最小 TTL 30秒
+  private maxTTL = 300000;   // 最大 TTL 5分钟
+  private targetAvgTime = 2000; // 目标平均执行时间 2秒
+  
   constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>, agentName?: string) {
     this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     this.agentName = agentName || 'default';
@@ -254,6 +260,7 @@ export class OODALoop {
     }
     
     this.cleanupCache();
+    this.adaptCacheStrategy();
     
     const output = state.result?.output || '';
     const completeEvent = { 
@@ -345,6 +352,11 @@ export class OODALoop {
     let orientStart = Date.now();
     console.log('[OODA] Getting orientation...');
     
+    // 如果有上一轮的验证反馈，将其添加到观察中
+    if (state.validationFeedback) {
+      console.log('[OODA] 使用上一轮验证反馈:', state.validationFeedback.issues);
+    }
+    
     let orientation: Orientation;
     let orientLLMInteraction: LLMInteraction | undefined;
     
@@ -354,7 +366,7 @@ export class OODALoop {
         await this.thinkingCallback('orient', type, content);
       }
     };
-    orientation = await this.orienter.orientStream(observation, orientThinkingCallback);
+    orientation = await this.orienter.orientStream(observation, orientThinkingCallback, state.validationFeedback);
     
     const orientDuration = Date.now() - orientStart;
     
@@ -729,10 +741,20 @@ export class OODALoop {
     
     const isComplete = cycleContext.isComplete();
     
+    // 构建验证反馈 - 传递给下一轮循环
+    const validationFeedback = {
+      issues: validatedResult.feedback.issues || [],
+      suggestions: validatedResult.feedback.suggestions || [],
+      isValid: validatedResult.success,
+      needsMoreWork: validatedResult.feedback.issues.length > 0,
+      previousQuery: decision.nextAction.args?.query as string,
+    };
+    
     return {
       ...state,
       currentStep: state.currentStep + 1,
       isComplete,
+      validationFeedback,
       history: [...state.history, {
         id: `msg-${Date.now()}`,
         role: 'assistant',
@@ -875,6 +897,59 @@ export class OODALoop {
   disableCache(): void {
     this.cacheEnabled = false;
     this.clearCache();
+  }
+
+  /**
+   * 动态调整缓存策略 - 基于性能指标自动调整
+   */
+  private adaptCacheStrategy(): void {
+    if (!this.adaptiveCacheEnabled || this.performanceMetrics.length < 3) {
+      return;
+    }
+
+    // 计算最近几次的平均执行时间
+    const recentMetrics = this.performanceMetrics.slice(-5);
+    const avgTime = recentMetrics.reduce((sum, m) => sum + m.totalTime, 0) / recentMetrics.length;
+    
+    // 如果执行时间过长，启用或增加缓存
+    if (avgTime > this.targetAvgTime * 2) {
+      if (!this.cacheEnabled) {
+        console.log('[OODA] 执行时间过长，启用缓存');
+        this.enableCache();
+      } else {
+        // 增加 TTL
+        const newTTL = Math.min(this.cacheTTL * 1.5, this.maxTTL);
+        if (newTTL !== this.cacheTTL) {
+          console.log('[OODA] 增加缓存 TTL:', this.cacheTTL, '->', newTTL);
+          this.cacheTTL = newTTL;
+        }
+      }
+    }
+    // 如果执行时间很短，可以减少缓存
+    else if (avgTime < this.targetAvgTime * 0.5 && this.cacheEnabled) {
+      const newTTL = Math.max(this.cacheTTL * 0.7, this.minTTL);
+      if (newTTL !== this.cacheTTL) {
+        console.log('[OODA] 执行时间很短，减少缓存 TTL:', this.cacheTTL, '->', newTTL);
+        this.cacheTTL = newTTL;
+      }
+    }
+  }
+
+  /**
+   * 启用自适应缓存
+   */
+  enableAdaptiveCache(enabled: boolean): void {
+    this.adaptiveCacheEnabled = enabled;
+  }
+
+  /**
+   * 配置缓存参数
+   */
+  configureCache(config: { ttl?: number; maxSize?: number; minTTL?: number; maxTTL?: number }): void {
+    if (config.ttl) this.cacheTTL = config.ttl;
+    if (config.maxSize) this.maxCacheSize = config.maxSize;
+    if (config.minTTL) this.minTTL = config.minTTL;
+    if (config.maxTTL) this.maxTTL = config.maxTTL;
   }
 
   /**

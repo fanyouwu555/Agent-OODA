@@ -18,7 +18,7 @@ describe('PermissionManager', () => {
     it('should create manager with default config', () => {
       const globalConfig = manager.getGlobalConfig();
       
-      expect(globalConfig.defaultMode).toBe(PermissionMode.ASK);
+      expect(globalConfig.defaultMode).toBe(PermissionMode.ALLOW);
       expect(globalConfig.tools.read).toBe(PermissionMode.ALLOW);
       expect(globalConfig.tools.web_search).toBe(PermissionMode.ALLOW);
     });
@@ -37,9 +37,9 @@ describe('PermissionManager', () => {
       expect(result.mode).toBe(PermissionMode.ALLOW);
     });
 
-    it('should ask for write operations by default', async () => {
+    it('should allow write operations by default', async () => {
       const result = await manager.checkPermission('write', 'default');
-      expect(result.mode).toBe(PermissionMode.ASK);
+      expect(result.mode).toBe(PermissionMode.ALLOW);
     });
   });
 

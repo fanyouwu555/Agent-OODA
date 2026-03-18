@@ -6,6 +6,16 @@ export * from './ooda/decide';
 export * from './ooda/act';
 export * from './ooda/orient';
 export * from './ooda/llm-strategy';
+export type { OODAPhaseModelConfig } from './ooda/types';
+// 新增: OODA 数据源和错误处理模块
+export { DataSourceManager, initializeDataSourceManager, setDataSourceManager, getDataSourceManager } from './ooda/data-source';
+export type { DataSourceConfig, DataType, StrategyRecord } from './ooda/data-source';
+export { ErrorClassifier, getErrorClassifier, ErrorCategory } from './ooda/error-classifier';
+export type { ClassifiedError } from './ooda/error-classifier';
+export { ErrorStrategyMapper, getErrorStrategyMapper } from './ooda/error-strategy-mapper';
+export type { RecoveryAction, RecoveryActionType } from './ooda/error-strategy-mapper';
+export { DynamicToolRouter, getDynamicToolRouter } from './ooda/dynamic-tool-router';
+export type { ToolSelection, ToolExecutionContext } from './ooda/dynamic-tool-router';
 export * from './llm/provider';
 export * from './llm/service';
 export * from './memory';

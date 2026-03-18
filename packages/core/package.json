@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest",
-    "lint": "eslint . --ext .ts"
+    "lint": "eslint . --ext .ts",
+    "test:llm": "node --loader ts-node/esm src/llm/test-runner.ts"
   },
   "dependencies": {
     "zod": "^3.22.4"

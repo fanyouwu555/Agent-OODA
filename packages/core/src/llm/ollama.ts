@@ -73,6 +73,13 @@ export class OllamaProvider implements LLMProvider {
     
     messages.push({ role: 'user', content: prompt });
     
+    // 详细日志：记录构建的消息
+    console.log(`[Ollama] buildMessages: 构建了 ${messages.length} 条消息`);
+    messages.forEach((msg, idx) => {
+      console.log(`[Ollama] Message ${idx}: role=${msg.role}, length=${msg.content.length}`);
+      console.log(`[Ollama] Message ${idx} content preview: ${msg.content.substring(0, 100)}...`);
+    });
+    
     return messages;
   }
   
@@ -135,8 +142,22 @@ export class OllamaProvider implements LLMProvider {
         const data = await response.json();
         const endTime = Date.now();
         
+        // 详细日志：记录完整的 API 响应
+        console.log(`[Ollama] Response data:`, JSON.stringify(data, null, 2).substring(0, 2000));
+        
+        const text = data.response || '';
+        
+        // 详细日志：检查响应内容
+        console.log(`[Ollama] Extracted text length: ${text.length}`);
+        console.log(`[Ollama] Extracted text preview: ${text.substring(0, 200)}`);
+        
+        if (!text || text.trim().length === 0) {
+          console.warn(`[Ollama] ⚠️  Warning: Empty content received from API`);
+          console.warn(`[Ollama] ⚠️  Response data:`, JSON.stringify(data));
+        }
+        
         return {
-          text: data.response || '',
+          text,
           tokens: data.eval_count || 0,
           time: endTime - startTime,
         };
@@ -165,7 +186,7 @@ export class OllamaProvider implements LLMProvider {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const url = `${this.baseUrl}/api/chat`;
-        const body = JSON.stringify({
+        const requestBody = {
           model: this.model,
           messages: messages.map(m => ({
             role: m.role,
@@ -177,9 +198,12 @@ export class OllamaProvider implements LLMProvider {
             num_predict: options?.maxTokens ?? this.maxTokens,
             stop: options?.stop,
           },
-        });
+        };
+        const body = JSON.stringify(requestBody);
         
         console.log(`[Ollama] POST ${url} (attempt ${attempt}/${MAX_RETRIES})`);
+        console.log(`[Ollama] Request body size: ${body.length} bytes`);
+        console.log(`[Ollama] Request body preview: ${body.substring(0, 500)}...`);
         console.log(`[Ollama] Messages: ${messages.length}`);
         
         const controller = new AbortController();
@@ -215,8 +239,22 @@ export class OllamaProvider implements LLMProvider {
         const data = await response.json();
         const endTime = Date.now();
         
+        // 详细日志：记录完整的 API 响应
+        console.log(`[Ollama] Response data:`, JSON.stringify(data, null, 2).substring(0, 2000));
+        
+        const text = data.message?.content || '';
+        
+        // 详细日志：检查响应内容
+        console.log(`[Ollama] Extracted text length: ${text.length}`);
+        console.log(`[Ollama] Extracted text preview: ${text.substring(0, 200)}`);
+        
+        if (!text || text.trim().length === 0) {
+          console.warn(`[Ollama] ⚠️  Warning: Empty content received from API`);
+          console.warn(`[Ollama] ⚠️  Response data:`, JSON.stringify(data));
+        }
+        
         return {
-          text: data.message?.content || '',
+          text,
           tokens: data.eval_count || 0,
           time: endTime - startTime,
         };

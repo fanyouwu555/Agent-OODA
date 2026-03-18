@@ -238,20 +238,28 @@ export class ConfigManager {
   
   getActiveProviderConfig(): LLMProviderConfig | null {
     const providerName = this.getActiveProviderName();
+    return this.getProviderConfigByName(providerName);
+  }
+
+  /**
+   * 获取指定 provider 和 model 的配置
+   * 用于 OODA 各阶段使用不同模型
+   */
+  getProviderConfigByName(providerName: string, modelName?: string): LLMProviderConfig | null {
     const providerConfig = this.config.provider?.[providerName];
-    
+
     if (!providerConfig) {
       return null;
     }
-    
-    const activeModelName = this.config.activeModel || (providerConfig.models ? Object.keys(providerConfig.models)[0] : undefined);
+
+    const activeModelName = modelName || this.config.activeModel || (providerConfig.models ? Object.keys(providerConfig.models)[0] : undefined);
     const modelConfig = activeModelName && providerConfig.models ? providerConfig.models[activeModelName] : undefined;
     const model = modelConfig?.name || activeModelName || 'unknown';
     const temperature = modelConfig?.temperature || 0.7;
     const maxTokens = modelConfig?.maxTokens || 2000;
-    
+
     const type = providerConfig.type || 'ollama';
-    
+
     switch (type) {
       case 'kimi':
         return {
@@ -262,7 +270,7 @@ export class ConfigManager {
           temperature,
           maxTokens,
         };
-      
+
       case 'openai-compatible':
         return {
           type: 'openai-compatible',
@@ -272,7 +280,7 @@ export class ConfigManager {
           temperature,
           maxTokens,
         };
-      
+
       case 'ollama':
       default:
         let ollamaBaseUrl = (providerConfig.options?.baseURL as string) || providerConfig.baseUrl || 'http://localhost:11434';

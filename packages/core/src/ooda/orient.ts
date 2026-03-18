@@ -1,10 +1,12 @@
 import { Observation, Orientation, Intent, Constraint, KnowledgeGap, Pattern, Relationship } from '../types';
-import { getLLMService } from '../llm/service';
+import { OrientInput, OrientOutput, createOrientInput, OODAPhaseModelConfig } from './types';
+import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { MemoryCompressor } from '../memory/long-term';
 import { KnowledgeGapDetector, KnowledgeGapType, getKnowledgeGapDetector, DetectedKnowledgeGap } from './knowledge-gap';
 import { ToolSelector, getToolSelector, ToolSelection } from './tool-selector';
+import { getLogger } from '../logger';
 
 /**
  * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
@@ -63,6 +65,15 @@ class OrienterStateManager {
 
 const orienterStateManager = new OrienterStateManager();
 
+// 创建 LLM 解析专用 logger
+const llmLogger = getLogger({
+  minLevel: 'debug',
+  enableConsole: true,
+  enableFile: true,
+  filePath: './logs/llm-parse-debug.log',
+  format: 'text',
+});
+
 export function resetOrienterState(sessionId: string): void {
   orienterStateManager.resetState(sessionId);
 }
@@ -77,18 +88,36 @@ export class Orienter {
   private state: OrienterState;
   private knowledgeGapDetector: KnowledgeGapDetector;
   private toolSelector: ToolSelector;
+  private logger = llmLogger;
+  private phaseModelConfig?: OODAPhaseModelConfig;
   
-  constructor(sessionId: string) {
+  constructor(sessionId: string, phaseModelConfig?: OODAPhaseModelConfig) {
     this.sessionId = sessionId;
     this.sessionMemory = getSessionMemory(sessionId);
     this.state = orienterStateManager.getState(sessionId);
     // 初始化知识缺口检测器和工具选择器
     this.knowledgeGapDetector = getKnowledgeGapDetector();
     this.toolSelector = getToolSelector();
+    this.phaseModelConfig = phaseModelConfig;
   }
   
-  private async getLLM() {
+  /**
+   * 获取 Orient 阶段的 LLM 服务
+   * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
+   */
+  private async getLLM(): Promise<LLMService> {
+    if (this.phaseModelConfig?.orient) {
+      const { provider, model } = this.phaseModelConfig.orient;
+      return getLLMServiceWithModel(provider, model);
+    }
     return getLLMService();
+  }
+  
+  /**
+   * 更新阶段模型配置
+   */
+  setPhaseModelConfig(config: OODAPhaseModelConfig) {
+    this.phaseModelConfig = config;
   }
   
   /**
@@ -142,15 +171,212 @@ export class Orienter {
     }
 
   /**
+   * 使用边界类型的 orient 方法 - 解耦版本
+   * 输入输出更清晰，减少对内部类型的依赖
+   */
+  async orientWithBoundary(input: OrientInput): Promise<OrientOutput> {
+    const analysisResult = await this.performDeepAnalysisFromBoundary(input);
+    
+    const intent: Intent = {
+      type: analysisResult.intentType,
+      parameters: analysisResult.parameters,
+      confidence: analysisResult.confidence,
+      rawInput: input.userInput,
+    };
+    
+    // 知识缺口自动检测
+    const mockHistory = input.recentHistory.map((m, i) => ({
+      id: `mock-${i}`,
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+      timestamp: Date.now(),
+    }));
+    
+    const detectedGaps = this.knowledgeGapDetector.detect(input.userInput, {
+      userInput: input.userInput,
+      toolResults: input.toolResultsSummary.map(r => ({
+        toolName: r.toolName,
+        isError: r.isError,
+        executionTime: r.executionTime,
+        result: null,
+      })),
+      environment: {
+        resourceUsage: {
+          memory: input.environmentSummary.memoryUsage,
+          cpu: input.environmentSummary.cpuUsage,
+          network: 0,
+        },
+        currentTime: Date.now(),
+        availableTools: [],
+      },
+      context: {
+        relevantFacts: [],
+        recentEvents: [],
+        userPreferences: {},
+      },
+      history: mockHistory,
+    } as unknown as Observation);
+    
+    const primaryGap = detectedGaps[0];
+    
+    if (primaryGap && primaryGap.type !== KnowledgeGapType.NONE && primaryGap.confidence >= 0.6) {
+      intent.parameters = {
+        ...intent.parameters,
+        knowledgeGap: primaryGap.type,
+        suggestedTool: primaryGap.suggestedTool,
+        suggestedArgs: primaryGap.suggestedArgs,
+        gapConfidence: primaryGap.confidence,
+      };
+    }
+    
+    // 构建约束
+    const constraints = this.buildConstraintsFromBoundary(input);
+    
+    // 返回清晰的输出边界
+    return {
+      primaryIntent: {
+        type: intent.type,
+        parameters: intent.parameters,
+        confidence: intent.confidence,
+        rawInput: intent.rawInput || '',
+      },
+      constraints,
+      knowledgeGaps: input.priorFeedback?.issues.map(issue => ({
+        topic: '上一轮问题',
+        description: issue,
+        importance: 0.7,
+      })) || [],
+      risks: analysisResult.risks,
+      assumptions: analysisResult.assumptions,
+      contextSummary: analysisResult.contextSummary || '',
+      detectedKnowledgeGaps: detectedGaps.map(g => ({
+        type: g.type,
+        description: g.description,
+        confidence: g.confidence,
+        suggestedTool: g.suggestedTool,
+        suggestedArgs: g.suggestedArgs,
+      })),
+    };
+  }
+
+  /**
+   * 从边界输入构建约束
+   */
+  private buildConstraintsFromBoundary(input: OrientInput): OrientOutput['constraints'] {
+    const constraints: OrientOutput['constraints'] = [];
+    
+    // 资源约束
+    if (input.environmentSummary.memoryUsage > 0.8) {
+      constraints.push({
+        type: 'resource',
+        description: '内存使用率过高',
+        severity: 'high',
+      });
+    }
+    
+    // 工具错误约束
+    const errorTools = input.toolResultsSummary.filter(r => r.isError);
+    if (errorTools.length > 0) {
+      constraints.push({
+        type: 'logic',
+        description: `工具执行错误: ${errorTools.map(r => r.toolName).join(', ')}`,
+        severity: 'medium',
+      });
+    }
+    
+    // 来自反馈的约束
+    if (input.priorFeedback?.issues.length) {
+      constraints.push({
+        type: 'logic',
+        description: `需要解决的问题: ${input.priorFeedback.issues.join('; ')}`,
+        severity: 'medium',
+      });
+    }
+    
+    return constraints;
+  }
+
+  /**
+   * 从边界输入执行深度分析
+   */
+  private async performDeepAnalysisFromBoundary(input: OrientInput): Promise<AnalysisResult> {
+    const llmService = await this.getLLM();
+    
+    // 准备历史消息
+    const history: ChatMessage[] = input.recentHistory.map(m => ({
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+    }));
+    
+    // 构建分析提示
+    const userPrompt = this.buildAnalysisPromptFromBoundary(input);
+    
+    try {
+      const response = await llmService.generate(userPrompt, {
+        systemPrompt: this.buildSystemPrompt(),
+        history,
+        maxTokens: 1500,
+      });
+      
+      return this.parseAnalysisResult(response.text || '', { userInput: input.userInput } as Observation);
+    } catch (error) {
+      console.error('[Orient] 边界输入分析失败:', error);
+      return this.fallbackAnalysis({ userInput: input.userInput } as Observation);
+    }
+  }
+
+  /**
+   * 为边界输入构建分析提示
+   */
+  private buildAnalysisPromptFromBoundary(input: OrientInput): string {
+    const toolResultsSummary = input.toolResultsSummary
+      .slice(-3)
+      .map(r => `${r.toolName}: ${r.isError ? 'ERROR' : 'SUCCESS'}`)
+      .join('\n');
+
+    const priorFeedbackSection = input.priorFeedback 
+      ? `\n## 上一轮反馈信息\n问题: ${input.priorFeedback.issues.join('; ')}\n建议: ${input.priorFeedback.suggestions.join('; ')}\n`
+      : '';
+
+    return `请分析以下用户输入和上下文信息：
+
+## 当前用户输入
+${input.userInput}
+${priorFeedbackSection}
+## 最近对话
+${input.recentHistory.map(m => `${m.role}: ${m.content}`).join('\n') || '无历史记录'}
+
+## 工具执行结果
+${toolResultsSummary || '无工具调用'}
+
+## 环境状态
+- 内存使用: ${Math.round(input.environmentSummary.memoryUsage * 100)}%
+- CPU使用: ${Math.round(input.environmentSummary.cpuUsage * 100)}%
+
+请以JSON格式输出意图分析结果，包含：intentType, parameters, confidence, contextSummary, assumptions, risks。
+
+请只输出JSON。`;
+  }
+
+  /**
    * 流式版本的 orient - 实时推送 LLM 思考过程
    */
-  async orientStream(observation: Observation, onThinking?: OrientThinkingCallback): Promise<Orientation> {
+  async orientStream(
+    observation: Observation, 
+    onThinking?: OrientThinkingCallback,
+    validationFeedback?: {
+      issues: string[];
+      suggestions: string[];
+      isValid: boolean;
+      needsMoreWork: boolean;
+    }
+  ): Promise<Orientation> {
     // 先发送开始思考的消息
     if (onThinking) {
       await onThinking('thinking', '🤔 正在分析您的意图...');
     }
 
-    const analysisResult = await this.performDeepAnalysisStream(observation, onThinking);
+    const analysisResult = await this.performDeepAnalysisStream(observation, onThinking, validationFeedback);
     
     const intent = this.buildIntent(analysisResult, observation.userInput);
     
@@ -208,7 +434,13 @@ export class Orienter {
    */
   private async performDeepAnalysisStream(
     observation: Observation, 
-    onThinking?: OrientThinkingCallback
+    onThinking?: OrientThinkingCallback,
+    validationFeedback?: {
+      issues: string[];
+      suggestions: string[];
+      isValid: boolean;
+      needsMoreWork: boolean;
+    }
   ): Promise<AnalysisResult> {
     const llmService = await this.getLLM();
     
@@ -226,7 +458,7 @@ export class Orienter {
     }
     
     const systemPrompt = this.buildSystemPrompt();
-    const userPrompt = this.buildAnalysisPrompt(observation, summary);
+    const userPrompt = this.buildAnalysisPrompt(observation, summary, validationFeedback);
     
     if (onThinking) {
       await onThinking('thinking', '🔄 正在调用 LLM 分析意图...');
@@ -274,30 +506,98 @@ export class Orienter {
     const systemPrompt = this.buildSystemPrompt();
     const userPrompt = this.buildAnalysisPrompt(observation, summary);
     
-    const response = await llmService.generate(userPrompt, {
-      systemPrompt,
-      history,
-      maxTokens: 1500,  // 增加 token 数量以确保返回完整 JSON
-    }).catch(err => {
-      console.error('[Orient] LLM调用失败:', err.message);
-      // 返回一个模拟响应，避免完全失败
-      return { text: '', error: err.message };
-    });
+    // 详细日志：记录 LLM 调用信息
+    this.logger.debug('========================================');
+    this.logger.debug('开始调用 LLM 服务（流式思考模式）');
+    this.logger.debug(`System Prompt 长度: ${systemPrompt.length} 字符`);
+    this.logger.debug(`User Prompt 长度: ${userPrompt.length} 字符`);
+    this.logger.debug(`History 消息数: ${history.length}`);
     
-    // 检查是否有错误
-    if (response.error) {
-      console.warn('[Orient] LLM返回错误:', response.error);
-    }
+    console.log(`[Orienter] ========================================`);
+    console.log(`[Orienter] 开始调用 LLM 服务（流式思考模式）`);
+    console.log(`[Orienter] System Prompt 长度: ${systemPrompt.length} 字符`);
+    console.log(`[Orienter] User Prompt 长度: ${userPrompt.length} 字符`);
+    console.log(`[Orienter] History 消息数: ${history.length}`);
     
-    console.log(`[Orient] LLM response length: ${response.text?.length || 0}, text: ${response.text?.slice(0, 200)}`);
+    const callStartTime = Date.now();
     
-    // 如果响应为空，使用 fallback
-    if (!response.text || response.text.trim().length === 0) {
-      console.warn('[Orient] LLM返回空响应，使用fallback');
+    // 第一步：流式获取 LLM 分析（自由文本）
+    let fullAnalysis = '';
+    let thinkingContent = '';
+    let jsonContent = '';
+    let isInJson = false;
+    
+    try {
+      console.log(`[Orienter] 开始流式接收分析...`);
+      
+      for await (const chunk of llmService.stream(userPrompt, {
+        systemPrompt,
+        history,
+        maxTokens: 2000,
+        temperature: 0.7,
+      })) {
+        fullAnalysis += chunk;
+        
+        // 解析 <thinking> 和 <json> 标签
+        if (chunk.includes('<json>')) {
+          isInJson = true;
+          const parts = chunk.split('<json>');
+          thinkingContent += parts[0];
+          if (parts[1]) {
+            jsonContent += parts[1];
+          }
+        } else if (chunk.includes('</json>')) {
+          const parts = chunk.split('</json>');
+          jsonContent += parts[0];
+          isInJson = false;
+          if (parts[1]) {
+            thinkingContent += parts[1];
+          }
+        } else if (isInJson) {
+          jsonContent += chunk;
+        } else {
+          thinkingContent += chunk;
+        }
+        
+        // 每 100 个字符输出一次日志
+        if (fullAnalysis.length % 100 < chunk.length) {
+          console.log(`[Orienter] 已接收 ${fullAnalysis.length} 字符...`);
+        }
+      }
+      
+      const callDuration = Date.now() - callStartTime;
+      
+      console.log(`[Orienter] 流式接收完成，总长度: ${fullAnalysis.length} 字符，耗时: ${callDuration}ms`);
+      console.log(`[Orienter] 思考内容: ${thinkingContent.length} 字符`);
+      console.log(`[Orienter] JSON内容: ${jsonContent.length} 字符`);
+      
+      this.logger.debug(`流式调用耗时: ${callDuration}ms`);
+      this.logger.debug(`完整响应长度: ${fullAnalysis.length} 字符`);
+      this.logger.debug(`思考内容:\n${thinkingContent}`);
+      this.logger.debug(`JSON内容:\n${jsonContent}`);
+      
+    } catch (err) {
+      const callDuration = Date.now() - callStartTime;
+      this.logger.error(`流式调用失败 (${callDuration}ms): ${(err as Error).message}`);
+      console.error('[Orient] 流式调用失败:', (err as Error).message);
       return this.fallbackAnalysis(observation);
     }
     
-    return this.parseAnalysisResult(response.text, observation);
+    // 如果响应为空，使用 fallback
+    if (!fullAnalysis || fullAnalysis.trim().length === 0) {
+      this.logger.warn('❌ LLM返回空响应，使用fallback');
+      console.warn('[Orient] ❌ LLM返回空响应，使用fallback');
+      return this.fallbackAnalysis(observation);
+    }
+    
+    // 第二步：如果有 JSON 内容，直接解析；否则提取结构化数据
+    if (jsonContent && jsonContent.trim().length > 0) {
+      console.log(`[Orienter] 从 <json> 标签提取到内容，直接解析`);
+      return this.parseAnalysisResult(jsonContent, observation);
+    } else {
+      console.log(`[Orienter] 未找到 <json> 标签，使用完整响应解析`);
+      return this.parseAnalysisResult(fullAnalysis, observation);
+    }
   }
   
   private async prepareHistoryForLLM(
@@ -376,18 +676,64 @@ ${conversationText}
   }
 
   private buildSystemPrompt(): string {
-    return `你是一个智能对话分析系统，负责分析用户的意图和上下文。
+    return `你是一个智能对话分析系统。请分析用户输入并提供详细的意图分析。
 
-你的任务是：
+【分析任务】
 1. 准确理解用户的真实意图
 2. 识别对话中的模式和关系
 3. 评估潜在的风险和约束
 4. 提取关键参数和信息
 
-请以JSON格式输出分析结果，确保格式正确。`;
+【输出格式】
+请使用以下格式输出：
+
+<thinking>
+你的详细分析过程，包括：
+- 用户输入的理解
+- 可能的意图推测
+- 上下文分析
+- 风险评估
+</thinking>
+
+<json>
+{
+  "intentType": "意图类型",
+  "parameters": {"key": "value"},
+  "confidence": 0.85,
+  "contextSummary": "上下文摘要",
+  "patterns": [{"type": "pattern_type", "description": "描述", "significance": 0.8}],
+  "relationships": [{"from": "A", "to": "B", "type": "dependency", "strength": 0.9}],
+  "assumptions": ["假设1", "假设2"],
+  "risks": ["风险1", "风险2"]
+}
+</json>
+
+【意图类型】
+- question: 用户提问
+- file_read: 读取文件
+- file_write: 写入文件
+- execute: 执行命令
+- search: 搜索信息
+- code_analysis: 代码分析
+- general: 一般对话
+
+【要求】
+1. 先输出思考过程（<thinking>标签内）
+2. 再输出结构化JSON（<json>标签内）
+3. JSON必须可被JSON.parse解析
+4. 如果无法确定，使用 "general" 类型`;
   }
 
-  private buildAnalysisPrompt(observation: Observation, conversationSummary?: string): string {
+  private buildAnalysisPrompt(
+    observation: Observation, 
+    conversationSummary?: string,
+    validationFeedback?: {
+      issues: string[];
+      suggestions: string[];
+      isValid: boolean;
+      needsMoreWork: boolean;
+    }
+  ): string {
     const recentHistory = observation.history
       .slice(-5)
       .map(m => {
@@ -412,11 +758,23 @@ ${conversationText}
       ? `\n## 对话历史摘要\n${conversationSummary}\n` 
       : '';
 
+    // 构建验证反馈部分
+    let validationSection = '';
+    if (validationFeedback) {
+      validationSection = `
+## 上一轮搜索/执行结果验证
+- 是否有效: ${validationFeedback.isValid ? '无效' : '有效'}
+- 需要改进: ${validationFeedback.needsMoreWork ? '是' : '否'}
+${validationFeedback.issues.length > 0 ? `- 发现的问题: ${validationFeedback.issues.join('; ')}` : ''}
+${validationFeedback.suggestions.length > 0 ? `- 改进建议: ${validationFeedback.suggestions.join('; ')}` : ''}
+`;
+    }
+
     return `请分析以下用户输入和上下文信息：
 
 ## 当前用户输入
 ${observation.userInput}
-${summarySection}
+${summarySection}${validationSection}
 ## 最近对话
 ${recentHistory || '无历史记录'}
 
@@ -456,53 +814,211 @@ ${relevantFacts}
 
 6. **风险评估**: 潜在风险
 
-## 输出格式
-{
-  "intentType": "意图类型",
-  "parameters": {"key": "value"},
-  "confidence": 0.85,
-  "contextSummary": "当前对话的上下文摘要",
-  "patterns": [
-    {"type": "pattern_type", "description": "模式描述", "significance": 0.8}
-  ],
-  "relationships": [
-    {"from": "组件A", "to": "组件B", "type": "dependency", "strength": 0.9}
-  ],
-  "assumptions": ["假设1", "假设2"],
-  "risks": ["风险1", "风险2"]
-}
+## 输出要求
 
-请只输出JSON，不要有其他内容。`;
+请先详细分析，然后按照 system prompt 中指定的格式输出 <thinking> 和 <json> 标签。
+
+分析要点：
+1. 理解用户真正想要什么
+2. 识别对话中的模式和关系
+3. 评估潜在风险
+4. 提取关键参数`;
   }
 
   private parseAnalysisResult(response: string, observation: Observation): AnalysisResult {
-    // 记录原始响应以便调试
-    console.log(`[Orient] parseAnalysisResult received response: "${response?.slice(0, 300)}..."`);
+    // 记录完整原始响应以便调试 - 写入日志文件
+    this.logger.debug('========================================');
+    this.logger.debug('开始解析 LLM 响应');
+    this.logger.debug(`响应长度: ${response?.length || 0} 字符`);
+    this.logger.debug(`原始响应内容:\n${response || '(空响应)'}`);
+    this.logger.debug('----------------------------------------');
     
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        console.log(`[Orient] JSON match found: "${jsonMatch[0].slice(0, 200)}..."`);
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          intentType: parsed.intentType || 'general',
-          parameters: parsed.parameters || {},
-          confidence: parsed.confidence || 0.5,
-          contextSummary: parsed.contextSummary,
-          patterns: parsed.patterns || [],
-          relationships: parsed.relationships || [],
-          assumptions: parsed.assumptions || [],
-          risks: parsed.risks || [],
-        };
-      } else {
-        console.warn('[Orient] No JSON found in LLM response, response:', response?.slice(0, 500));
-      }
-    } catch (e) {
-      console.warn('[Orient] Failed to parse LLM response:', e, 'Response:', response?.slice(0, 500));
+    // 同时输出到控制台
+    console.log(`[Orient] ========================================`);
+    console.log(`[Orient] 开始解析 LLM 响应`);
+    console.log(`[Orient] 响应长度: ${response?.length || 0} 字符`);
+    console.log(`[Orient] 原始响应内容:\n${response || '(空响应)'}`);
+    console.log(`[Orient] ----------------------------------------`);
+    
+    if (!response || response.trim().length === 0) {
+      this.logger.warn('❌ 失败原因: LLM 返回空响应');
+      this.logger.debug('========================================');
+      console.warn('[Orient] ❌ 失败原因: LLM 返回空响应');
+      console.log(`[Orient] ========================================`);
+      return this.fallbackAnalysis(observation);
     }
     
-    console.log('[Orient] Falling back to keyword matching...');
+    try {
+      // 尝试多种 JSON 提取策略
+      const jsonMatch = this.extractJSON(response);
+      if (jsonMatch) {
+        this.logger.debug(`✅ 成功提取 JSON，长度: ${jsonMatch.length} 字符`);
+        this.logger.debug(`提取的 JSON 内容:\n${jsonMatch}`);
+        console.log(`[Orient] ✅ 成功提取 JSON，长度: ${jsonMatch.length} 字符`);
+        console.log(`[Orient] 提取的 JSON 内容:\n${jsonMatch}`);
+        
+        try {
+          const parsed = JSON.parse(jsonMatch);
+          
+          // 验证必需字段
+          const requiredFields = ['intentType', 'parameters', 'confidence'];
+          const missingFields = requiredFields.filter(f => !(f in parsed));
+          
+          if (missingFields.length > 0) {
+            this.logger.warn(`⚠️  JSON 缺少必需字段: ${missingFields.join(', ')}`);
+            console.warn(`[Orient] ⚠️  JSON 缺少必需字段: ${missingFields.join(', ')}`);
+          } else {
+            this.logger.debug('✅ JSON 包含所有必需字段');
+            console.log(`[Orient] ✅ JSON 包含所有必需字段`);
+          }
+          
+          this.logger.debug(`解析结果: intentType=${parsed.intentType}, confidence=${parsed.confidence}`);
+          this.logger.debug('========================================');
+          console.log(`[Orient] 解析结果: intentType=${parsed.intentType}, confidence=${parsed.confidence}`);
+          console.log(`[Orient] ========================================`);
+          
+          return {
+            intentType: parsed.intentType || 'general',
+            parameters: parsed.parameters || {},
+            confidence: parsed.confidence || 0.5,
+            contextSummary: parsed.contextSummary,
+            patterns: parsed.patterns || [],
+            relationships: parsed.relationships || [],
+            assumptions: parsed.assumptions || [],
+            risks: parsed.risks || [],
+          };
+        } catch (parseError) {
+          this.logger.warn(`❌ JSON.parse 失败: ${parseError}`);
+          this.logger.debug(`尝试解析的内容: ${jsonMatch.slice(0, 500)}`);
+          console.warn(`[Orient] ❌ JSON.parse 失败:`, parseError);
+          console.log(`[Orient] 尝试解析的内容: ${jsonMatch.slice(0, 500)}`);
+        }
+      } else {
+        this.logger.warn('❌ 失败原因: 无法从响应中提取有效 JSON');
+        this.logger.debug(`响应内容预览 (前1000字符):\n${response?.slice(0, 1000)}`);
+        console.warn('[Orient] ❌ 失败原因: 无法从响应中提取有效 JSON');
+        console.log(`[Orient] 响应内容预览 (前1000字符):\n${response?.slice(0, 1000)}`);
+        
+        // 分析为什么提取失败
+        if (!response.includes('{')) {
+          this.logger.warn('诊断: 响应中不包含 "{" 字符，可能不是 JSON 格式');
+          console.warn('[Orient] 诊断: 响应中不包含 "{" 字符，可能不是 JSON 格式');
+        } else if (!response.includes('}')) {
+          this.logger.warn('诊断: 响应中不包含 "}" 字符，JSON 可能不完整');
+          console.warn('[Orient] 诊断: 响应中不包含 "}" 字符，JSON 可能不完整');
+        } else {
+          // 尝试找出可能的 JSON 问题
+          const braceCount = (response.match(/{/g) || []).length;
+          const closeBraceCount = (response.match(/}/g) || []).length;
+          this.logger.warn(`诊断: 花括号不匹配 - 开括号: ${braceCount}, 闭括号: ${closeBraceCount}`);
+          console.warn(`[Orient] 诊断: 花括号不匹配 - 开括号: ${braceCount}, 闭括号: ${closeBraceCount}`);
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`❌ 解析过程发生异常: ${e}`);
+      console.warn('[Orient] ❌ 解析过程发生异常:', e);
+    }
+    
+    this.logger.warn('⚠️  将使用 fallback 关键词匹配模式');
+    this.logger.debug('========================================');
+    console.warn('[Orient] ⚠️  将使用 fallback 关键词匹配模式');
+    console.log(`[Orient] ========================================`);
     return this.fallbackAnalysis(observation);
+  }
+
+  /**
+   * 多策略 JSON 提取 - 更健壮的 JSON 解析
+   */
+  private extractJSON(response: string): string | null {
+    if (!response || !response.trim()) {
+      this.logger.debug('extractJSON: 响应为空');
+      console.log('[Orient] extractJSON: 响应为空');
+      return null;
+    }
+
+    this.logger.debug('extractJSON: 开始尝试 5 种提取策略');
+    console.log('[Orient] extractJSON: 开始尝试 5 种提取策略');
+
+    // 策略 1: 尝试直接解析整个响应
+    try {
+      JSON.parse(response);
+      this.logger.debug('extractJSON: ✅ 策略1成功 - 直接解析整个响应');
+      console.log('[Orient] extractJSON: ✅ 策略1成功 - 直接解析整个响应');
+      return response;
+    } catch (e) {
+      this.logger.debug('extractJSON: ❌ 策略1失败 - 直接解析失败');
+      console.log('[Orient] extractJSON: ❌ 策略1失败 - 直接解析失败');
+    }
+
+    // 策略 2: 查找 JSON 对象 {...}
+    const objectMatch = response.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      // 验证提取的内容是否可以解析
+      try {
+        JSON.parse(objectMatch[0]);
+        this.logger.debug('extractJSON: ✅ 策略2成功 - 匹配 {...}');
+        console.log('[Orient] extractJSON: ✅ 策略2成功 - 匹配 {...}');
+        return objectMatch[0];
+      } catch (e) {
+        this.logger.debug(`extractJSON: ❌ 策略2失败 - 匹配到内容但解析失败，长度: ${objectMatch[0].length}`);
+        console.log(`[Orient] extractJSON: ❌ 策略2失败 - 匹配到内容但解析失败，长度: ${objectMatch[0].length}`);
+      }
+    } else {
+      this.logger.debug('extractJSON: ❌ 策略2失败 - 未匹配到 {...}');
+      console.log('[Orient] extractJSON: ❌ 策略2失败 - 未匹配到 {...}');
+    }
+
+    // 策略 3: 查找 JSON 数组 [...]
+    const arrayMatch = response.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        JSON.parse(arrayMatch[0]);
+        this.logger.debug('extractJSON: ✅ 策略3成功 - 匹配 [...]');
+        console.log('[Orient] extractJSON: ✅ 策略3成功 - 匹配 [...]');
+        return arrayMatch[0];
+      } catch (e) {
+        this.logger.debug('extractJSON: ❌ 策略3失败 - 匹配到数组但解析失败');
+        console.log(`[Orient] extractJSON: ❌ 策略3失败 - 匹配到数组但解析失败`);
+      }
+    } else {
+      this.logger.debug('extractJSON: ❌ 策略3失败 - 未匹配到 [...]');
+      console.log('[Orient] extractJSON: ❌ 策略3失败 - 未匹配到 [...]');
+    }
+
+    // 策略 4: 尝试找到 "{" 和 "}" 包围的内容
+    const startBrace = response.indexOf('{');
+    const endBrace = response.lastIndexOf('}');
+    if (startBrace !== -1 && endBrace !== -1 && endBrace > startBrace) {
+      const jsonCandidate = response.substring(startBrace, endBrace + 1);
+      try {
+        JSON.parse(jsonCandidate);
+        this.logger.debug('extractJSON: ✅ 策略4成功 - 通过索引提取 {...}');
+        console.log('[Orient] extractJSON: ✅ 策略4成功 - 通过索引提取 {...}');
+        return jsonCandidate;
+      } catch (e) {
+        this.logger.debug(`extractJSON: ❌ 策略4失败 - 索引提取但解析失败，内容长度: ${jsonCandidate.length}`);
+        console.log(`[Orient] extractJSON: ❌ 策略4失败 - 索引提取但解析失败，内容长度: ${jsonCandidate.length}`);
+      }
+    } else {
+      this.logger.debug(`extractJSON: ❌ 策略4失败 - 无法定位花括号 (start: ${startBrace}, end: ${endBrace})`);
+      console.log(`[Orient] extractJSON: ❌ 策略4失败 - 无法定位花括号 (start: ${startBrace}, end: ${endBrace})`);
+    }
+
+    // 策略 5: 移除 markdown 代码块标记
+    const withoutMarkdown = response.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    try {
+      JSON.parse(withoutMarkdown);
+      this.logger.debug('extractJSON: ✅ 策略5成功 - 移除 markdown 后解析');
+      console.log('[Orient] extractJSON: ✅ 策略5成功 - 移除 markdown 后解析');
+      return withoutMarkdown;
+    } catch (e) {
+      this.logger.debug('extractJSON: ❌ 策略5失败 - 移除 markdown 后仍无法解析');
+      console.log('[Orient] extractJSON: ❌ 策略5失败 - 移除 markdown 后仍无法解析');
+    }
+
+    this.logger.debug('extractJSON: ⚠️  所有策略均失败');
+    console.log('[Orient] extractJSON: ⚠️  所有策略均失败');
+    return null;
   }
 
   private fallbackAnalysis(observation: Observation): AnalysisResult {

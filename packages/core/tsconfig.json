@@ -19,7 +19,6 @@
     "noUnusedParameters": false,
     "noImplicitReturns": false,
     "noFallthroughCasesInSwitch": false,
-    "noUncheckedIndexedAccess": false,
     "noImplicitOverride": false,
     "allowUnusedLabels": true,
     "allowUnreachableCode": true,
@@ -34,7 +33,8 @@
     "paths": {
       "@ooda-agent/*": ["../packages/*/src"]
     },
-    "typeRoots": ["../../node_modules/@types", "../../types"]
+    "typeRoots": ["../../node_modules/@types", "../../types"],
+    "downlevelIteration": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/__tests__/**/*"]

@@ -18,8 +18,9 @@ import { requestLogger } from './middleware/logger';
 import { logger } from './utils/logger';
 import { detailedLogger } from './utils/detailed-logger';
 import { initializeSkills, initializeTools } from '@ooda-agent/tools';
-import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry } from '@ooda-agent/core';
+import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry, initializeDataSourceManager } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
+import { initializeOodaMetrics } from '../../core/src/metrics/ooda-metrics';
 import { createStorage } from '@ooda-agent/storage';
 import { createServer } from 'node:http';
 import { promises as fs } from 'fs';
@@ -148,6 +149,10 @@ async function main() {
   initializeMemorySystem(storage.memories, enableEmbedding);
   logger.info('Memory', `Memory system initialized (embedding: ${enableEmbedding})`);
   
+  // 初始化 DataSourceManager
+  initializeDataSourceManager(storage.manager);
+  logger.info('DataSource', 'DataSource manager initialized');
+  
   const personaManager = initializePersonaManager(storage.memories);
   await personaManager.loadDefaultPersona();
   logger.info('Memory', 'Default persona loaded');
@@ -155,9 +160,13 @@ async function main() {
   const mcp = getMCPService();
 
   // 初始化工具并注册到 core 的 UnifiedToolRegistry
-  const toolsRegistry = initializeTools();
-  setToolRegistry(toolsRegistry as any);
-  logger.info('Tools', `Registered tools: ${toolsRegistry.list().join(', ')}`);
+   const toolsRegistry = initializeTools();
+   setToolRegistry(toolsRegistry as any);
+   logger.info('Tools', `Registered tools: ${toolsRegistry.list().join(', ')}`);
+   
+   // Initialize OODA metrics
+   initializeOodaMetrics();
+   logger.info('Metrics', 'OODA metrics initialized');
 
   mcp.subscribe('agent.response', (message) => {
     const payload = message.payload as { content?: string; sessionId?: string };
@@ -224,16 +233,25 @@ async function main() {
     });
   });
 
-  app.get('/api/skills', (c) => {
-    logger.debug('Skills', 'Skills list requested');
-    const skills = getSkillRegistry().list();
-    return c.json(skills.map(skill => ({
-      name: skill.name,
-      description: skill.description,
-      category: skill.category,
-      version: skill.version
-    })));
-  });
+   app.get('/api/skills', (c) => {
+     logger.debug('Skills', 'Skills list requested');
+     const skills = getSkillRegistry().list();
+     return c.json(skills.map(skill => ({
+       name: skill.name,
+       description: skill.description,
+       category: skill.category,
+       version: skill.version
+     })));
+   });
+
+    // Prometheus metrics endpoint
+    app.get('/metrics', async (c) => {
+      logger.debug('Metrics', 'Prometheus metrics requested');
+      const { getOodaMetrics } = await import('../../core/src/metrics/ooda-metrics');
+      const metrics = await getOodaMetrics();
+      c.header('Content-Type', 'text/plain; version=0.0.4');
+      return c.body(metrics, 200);
+    });
 
   const PORT = await findAvailablePort(Number(process.env.PORT) || 3000);
 

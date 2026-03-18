@@ -1,7 +1,7 @@
 import { z } from 'zod';
 function getConfig() {
     return {
-        searchEngine: process.env.SEARCH_ENGINE || 'duckduckgo',
+        searchEngine: process.env.SEARCH_ENGINE || 'baidu',
         serperApiKey: process.env.SERPER_API_KEY,
         bingApiKey: process.env.BING_API_KEY,
         timeout: parseInt(process.env.WEB_REQUEST_TIMEOUT || '30000', 10),
@@ -115,6 +115,87 @@ export async function searchDuckDuckGo(query, limit = 5) {
         throw error;
     }
 }
+
+export async function searchBaidu(query, limit = 5) {
+    const config = getConfig();
+    try {
+        const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&pn=${limit}`;
+        const response = await searchWithTimeout(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            },
+        }, config.timeout);
+        if (!response.ok) {
+            throw new Error(`Baidu search failed: ${response.status}`);
+        }
+        const html = await response.text();
+        const results = [];
+        
+        // 匹配搜索结果: class="c-container"
+        const containerPattern = /<div[^>]*class="c-container[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*class="c-abstract[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
+        
+        // 简化匹配：匹配标题和URL
+        const titleUrlPattern = /<h3[^>]*class="t"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h3>/gi;
+        const snippetPattern = /<p[^>]*class="c-abstract[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
+        
+        const titleUrls = [];
+        let match;
+        
+        while ((match = titleUrlPattern.exec(html)) !== null && titleUrls.length < limit) {
+            let rawUrl = match[1];
+            const title = match[2].replace(/<[^>]*>/g, '').trim();
+            
+            // 百度跳转URL处理
+            if (rawUrl.includes('http://www.baidu.com/link')) {
+                const baiduMatch = rawUrl.match(/url=([^&]+)/);
+                if (baiduMatch) {
+                    rawUrl = decodeURIComponent(baiduMatch[1]);
+                }
+            }
+            
+            if (rawUrl.startsWith('http')) {
+                titleUrls.push({ url: rawUrl, title });
+            }
+        }
+        
+        // 提取摘要
+        const snippets = [];
+        const snippetMatchPattern = /<p[^>]*class="c-abstract[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
+        while ((match = snippetMatchPattern.exec(html)) !== null && snippets.length < limit) {
+            const snippet = match[1].replace(/<[^>]*>/g, '').trim();
+            snippets.push(snippet);
+        }
+        
+        // 合并结果
+        for (let i = 0; i < Math.min(titleUrls.length, limit); i++) {
+            results.push({
+                title: titleUrls[i].title,
+                url: titleUrls[i].url,
+                snippet: snippets[i] || '',
+            });
+        }
+        
+        // 如果上面的匹配不够，尝试备用模式
+        if (results.length < limit) {
+            const altPattern = /<div[^>]*class="c-container[^"]*"[^>]*>[\s\S]*?<a[^>]*href="(https?:\/\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+            while ((match = altPattern.exec(html)) !== null && results.length < limit) {
+                const url = match[1];
+                const title = match[2].replace(/<[^>]*>/g, '').trim();
+                if (url.startsWith('http') && !results.find(r => r.url === url)) {
+                    results.push({ title, url, snippet: '' });
+                }
+            }
+        }
+        
+        return results.slice(0, limit);
+    }
+    catch (error) {
+        console.error('Baidu search error:', error);
+        throw error;
+    }
+}
 export async function searchSerper(query, limit = 5) {
     const config = getConfig();
     if (!config.serperApiKey) {
@@ -194,6 +275,8 @@ export async function webSearch(query, limit = 5) {
             return searchSerper(query, limit);
         case 'bing':
             return searchBing(query, limit);
+        case 'baidu':
+            return searchBaidu(query, limit);
         case 'duckduckgo':
         default:
             return searchDuckDuckGo(query, limit);

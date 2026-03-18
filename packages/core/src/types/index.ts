@@ -40,6 +40,14 @@ export interface AgentState {
   isComplete: boolean;
   result?: AgentResult;
   metadata: Record<string, unknown>;
+  /** 验证反馈 - 用于将验证结果传递给下一轮循环 */
+  validationFeedback?: {
+    issues: string[];
+    suggestions: string[];
+    isValid: boolean;
+    needsMoreWork: boolean;
+    previousQuery?: string;
+  };
 }
 
 export interface AgentResult {

@@ -11,7 +11,8 @@ import {
   ReasoningStep,
   FallbackStrategy
 } from '../types';
-import { getLLMService } from '../llm/service';
+import { OODAPhaseModelConfig } from './types';
+import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 import { ToolSelector, getToolSelector } from './tool-selector';
 
@@ -32,13 +33,30 @@ interface DecisionAnalysis {
 
 export class Decider {
   private toolSelector: ToolSelector;
+  private phaseModelConfig?: OODAPhaseModelConfig;
   
-  constructor() {
+  constructor(phaseModelConfig?: OODAPhaseModelConfig) {
     this.toolSelector = getToolSelector();
+    this.phaseModelConfig = phaseModelConfig;
   }
-  
-  private async getLLM() {
+
+  /**
+   * 获取 Decide 阶段的 LLM 服务
+   * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
+   */
+  private async getLLM(): Promise<LLMService> {
+    if (this.phaseModelConfig?.decide) {
+      const { provider, model } = this.phaseModelConfig.decide;
+      return getLLMServiceWithModel(provider, model);
+    }
     return getLLMService();
+  }
+
+  /**
+   * 更新阶段模型配置
+   */
+  setPhaseModelConfig(config: OODAPhaseModelConfig) {
+    this.phaseModelConfig = config;
   }
   
   async decide(orientation: Orientation): Promise<Decision> {

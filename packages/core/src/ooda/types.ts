@@ -42,6 +42,41 @@ export interface AgentModelConfig {
   maxTokens?: number;
 }
 
+/**
+ * OODA 各阶段模型配置
+ * 允许每个阶段使用不同的模型
+ */
+export interface OODAPhaseModelConfig {
+  /** Observe 阶段模型 */
+  observe?: {
+    provider: string;
+    model: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+  /** Orient 阶段模型 */
+  orient?: {
+    provider: string;
+    model: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+  /** Decide 阶段模型 */
+  decide?: {
+    provider: string;
+    model: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+  /** Act 阶段模型 */
+  act?: {
+    provider: string;
+    model: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+}
+
 export interface AgentToolConfig {
   allowed: string[];
   denied?: string[];
@@ -386,5 +421,186 @@ export function createOODACycleContext(sessionId: string, iteration: number, ori
       if (this.act) parts.push(`Act: ${this.act.success ? '✓' : '✗'}`);
       return parts.join(' → ');
     }
+  };
+}
+
+// =========================================
+// 阶段边界类型定义 - 解耦 OODA 各阶段的数据依赖
+// =========================================
+
+/**
+ * Orient 阶段输入边界
+ * 只包含Orient阶段需要的核心数据，避免直接依赖Observation类型
+ */
+export interface OrientInput {
+  /** 用户原始输入 */
+  userInput: string;
+  /** 工具执行结果（简化版） */
+  toolResultsSummary: {
+    toolName: string;
+    isError: boolean;
+    executionTime: number;
+  }[];
+  /** 最近的对话历史（用于上下文理解） */
+  recentHistory: {
+    role: string;
+    content: string;
+  }[];
+  /** 环境状态（仅包含必要信息） */
+  environmentSummary: {
+    memoryUsage: number;
+    cpuUsage: number;
+  };
+  /** 从上一轮反馈中获取的关键信息 */
+  priorFeedback?: {
+    issues: string[];
+    suggestions: string[];
+  };
+}
+
+/**
+ * Orient 阶段输出边界
+ * 清晰定义Orient阶段的输出，不包含冗余数据
+ */
+export interface OrientOutput {
+  /** 主要意图 */
+  primaryIntent: {
+    type: string;
+    parameters: Record<string, unknown>;
+    confidence: number;
+    rawInput: string;
+  };
+  /** 约束条件 */
+  constraints: {
+    type: 'time' | 'resource' | 'permission' | 'logic';
+    description: string;
+    severity: 'low' | 'medium' | 'high';
+  }[];
+  /** 知识缺口 */
+  knowledgeGaps: {
+    topic: string;
+    description: string;
+    importance: number;
+  }[];
+  /** 风险评估 */
+  risks: string[];
+  /** 假设列表 */
+  assumptions: string[];
+  /** 上下文摘要 */
+  contextSummary: string;
+  /** 检测到的知识缺口（自动检测） */
+  detectedKnowledgeGaps?: {
+    type: string;
+    description: string;
+    confidence: number;
+    suggestedTool?: string;
+    suggestedArgs?: Record<string, unknown>;
+  }[];
+}
+
+/**
+ * Decide 阶段输入边界
+ */
+export interface DecideInput {
+  /** 来自Orient阶段的输出 */
+  orientation: OrientOutput;
+  /** 当前可用的工具列表 */
+  availableTools: string[];
+  /** 上一轮执行结果 */
+  previousActionResult?: {
+    success: boolean;
+    toolName?: string;
+    error?: string;
+  };
+}
+
+/**
+ * Decide 阶段输出边界
+ */
+export interface DecideOutput {
+  /** 问题陈述 */
+  problemStatement: string;
+  /** 选中的方案 */
+  selectedOption: {
+    id: string;
+    description: string;
+    approach: string;
+  };
+  /** 下一个要执行的动作 */
+  nextAction: {
+    type: 'tool_call' | 'response' | 'clarification';
+    toolName?: string;
+    args?: Record<string, unknown>;
+    content?: string;
+    clarificationQuestion?: string;
+    reasoningChain?: { step: number; thought: string }[];
+    fallbackStrategy?: {
+      condition: string;
+      alternativeTool?: string;
+      simplifiedTask?: boolean;
+    };
+  };
+  /** 推理过程 */
+  reasoning: string;
+  /** 决策置信度 */
+  confidence: number;
+  /** 成功标准 */
+  successCriteria: string[];
+}
+
+/**
+ * Act 阶段执行结果边界
+ */
+export interface ActOutput {
+  success: boolean;
+  result: unknown;
+  sideEffects: string[];
+  feedback: {
+    observations: string[];
+    newInformation: string[];
+    issues: string[];
+    suggestions: string[];
+  };
+}
+
+/**
+ * 创建 OrientInput 的工厂函数
+ * 从 Observation 转换为 Orient 需要的精简输入
+ */
+export function createOrientInput(
+  observation: import('../types').Observation,
+  priorFeedback?: OrientInput['priorFeedback']
+): OrientInput {
+  return {
+    userInput: observation.userInput,
+    toolResultsSummary: observation.toolResults.map(r => ({
+      toolName: r.toolName,
+      isError: r.isError,
+      executionTime: r.executionTime,
+    })),
+    recentHistory: observation.history.slice(-10).map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content.slice(0, 500) : '',
+    })),
+    environmentSummary: {
+      memoryUsage: observation.environment.resourceUsage.memory,
+      cpuUsage: observation.environment.resourceUsage.cpu,
+    },
+    priorFeedback,
+  };
+}
+
+/**
+ * 创建 DecideInput 的工厂函数
+ */
+export function createDecideInput(
+  orientation: OrientOutput,
+  availableTools: string[],
+  previousActionResult?: DecideInput['previousActionResult']
+): DecideInput {
+  return {
+    orientation,
+    availableTools,
+    previousActionResult,
   };
 }

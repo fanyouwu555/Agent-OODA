@@ -59,3 +59,26 @@ export function reinitializeLLMService(): LLMService {
   llmService = null;
   return getLLMService();
 }
+
+/**
+ * 根据配置创建 LLM 服务实例
+ * 用于 OODA 各阶段选择不同模型
+ */
+export function createLLMServiceWithConfig(config: LLMProviderConfig): LLMService {
+  return new LLMService(config);
+}
+
+/**
+ * 获取指定 provider 和 model 的 LLM 服务
+ */
+export function getLLMServiceWithModel(providerName: string, modelName: string): LLMService {
+  const configManager = getConfigManager();
+
+  // 获取指定 provider 和 model 的配置
+  const config = configManager.getProviderConfigByName(providerName, modelName);
+  if (!config) {
+    throw new Error(`Provider config not found: ${providerName}`);
+  }
+
+  return new LLMService(config);
+}

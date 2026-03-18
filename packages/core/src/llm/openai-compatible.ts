@@ -133,7 +133,21 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const data = await response.json();
         const endTime = Date.now();
         
+        // 详细日志：记录完整的 API 响应
+        console.log(`[OpenAI-Compatible] Response data:`, JSON.stringify(data, null, 2).substring(0, 2000));
+        
         const text = data.choices?.[0]?.message?.content || '';
+        
+        // 详细日志：检查响应内容
+        console.log(`[OpenAI-Compatible] Extracted text length: ${text.length}`);
+        console.log(`[OpenAI-Compatible] Extracted text preview: ${text.substring(0, 200)}`);
+        
+        if (!text || text.trim().length === 0) {
+          console.warn(`[OpenAI-Compatible] ⚠️  Warning: Empty content received from API`);
+          console.warn(`[OpenAI-Compatible] ⚠️  choices:`, JSON.stringify(data.choices));
+          console.warn(`[OpenAI-Compatible] ⚠️  finish_reason:`, data.choices?.[0]?.finish_reason);
+          console.warn(`[OpenAI-Compatible] ⚠️  usage:`, JSON.stringify(data.usage));
+        }
         
         return {
           text,

@@ -1,5 +1,6 @@
 // packages/core/src/ooda/act.ts
 import { Decision, Action, ActionResult, ActionFeedback, FallbackStrategy } from '../types';
+import { OODAPhaseModelConfig } from './types';
 import { ToolRegistryImpl, getToolRegistry } from '../tool/registry';
 import type { ToolRegistry } from '../tool/interface';
 import { SkillContext } from '../skill/interface';
@@ -10,9 +11,28 @@ import {
   PermissionManagerImpl 
 } from '../permission';
 import type { PermissionManager } from '../permission';
-import { getLLMService } from '../llm/service';
+import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
 import { ChatMessage } from '../llm/provider';
 import { getLLMStrategyDecider } from './llm-strategy';
+import { CircuitBreaker, CircuitBreakerState, CircuitBreakerOptions, CircuitBreakerConfigs } from '../error/circuit-breaker';
+import { oodaMetrics } from '../metrics/ooda-metrics';
+
+// 新增: 动态工具路由和错误处理
+import { getDynamicToolRouter, DynamicToolRouter } from './dynamic-tool-router';
+import { getErrorClassifier, ErrorClassifier } from './error-classifier';
+import { getDataSourceManager, DataSourceManager } from './data-source';
+
+/**
+ * 动作执行上下文 (扩展)
+ */
+interface ActionExecutionContext {
+  sessionId: string;
+  userInput: string;
+  dataType?: string;
+  toolResults: unknown[];
+  retryCount: number;
+  previousErrors: unknown[];
+}
 
 /**
  * 重试配置
@@ -39,23 +59,103 @@ export class Actor {
   private permissionManager = getPermissionManager();
   private agentName: string;  // 从配置获取
   private retryConfig: RetryConfig;
-  
+  private circuitBreaker: CircuitBreaker | null = null;
+
+  // 新增: 动态工具路由和错误处理
+  private dynamicToolRouter: DynamicToolRouter;
+  private errorClassifier: ErrorClassifier;
+  private dataSourceManager: DataSourceManager;
+
+  // 新增: 执行上下文
+  private executionContext: ActionExecutionContext = {
+    sessionId: '',
+    userInput: '',
+    dataType: undefined,
+    toolResults: [],
+    retryCount: 0,
+    previousErrors: [],
+  };
+
+  // 新增: 阶段模型配置
+  private phaseModelConfig?: OODAPhaseModelConfig;
+
   constructor(
-    sessionId: string, 
+    sessionId: string,
     toolRegistry?: ToolRegistry,
     retryConfig?: Partial<RetryConfig>,
-    agentName?: string  // 新增参数
+    agentName?: string,  // 新增参数
+    circuitBreakerOptions?: Partial<CircuitBreakerOptions>,  // 断路器配置
+    phaseModelConfig?: OODAPhaseModelConfig  // 阶段模型配置
   ) {
     this.sessionId = sessionId;
     // 使用全局工具注册表，如果没有传入
     this.toolRegistry = toolRegistry || getToolRegistry();
     this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
     this.agentName = agentName || 'default';
+    this.phaseModelConfig = phaseModelConfig;
+
+    // 初始化断路器（如果提供了配置）
+    if (circuitBreakerOptions) {
+      this.circuitBreaker = new CircuitBreaker(
+        `actor-${this.agentName}`,
+        { ...CircuitBreakerConfigs.DEFAULT, ...circuitBreakerOptions }
+      );
+    }
+
+    // 初始化动态工具路由和错误处理模块
+    this.dynamicToolRouter = getDynamicToolRouter();
+    this.errorClassifier = getErrorClassifier();
+    this.dataSourceManager = getDataSourceManager();
+  }
+
+  /**
+   * 获取 Act 阶段的 LLM 服务
+   * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
+   */
+  private async getLLM(): Promise<LLMService> {
+    if (this.phaseModelConfig?.act) {
+      const { provider, model } = this.phaseModelConfig.act;
+      return getLLMServiceWithModel(provider, model);
+    }
+    return getLLMService();
+  }
+
+  /**
+   * 更新阶段模型配置
+   */
+  setPhaseModelConfig(config: OODAPhaseModelConfig) {
+    this.phaseModelConfig = config;
+  }
+  
+  /**
+   * 设置执行上下文
+   */
+  setExecutionContext(context: Partial<ActionExecutionContext>): void {
+    this.executionContext = { ...this.executionContext, ...context };
+  }
+
+  /**
+   * 重置执行上下文
+   */
+  resetExecutionContext(): void {
+    this.executionContext = {
+      sessionId: this.sessionId,
+      userInput: '',
+      dataType: undefined,
+      toolResults: [],
+      retryCount: 0,
+      previousErrors: [],
+    };
   }
 
   async act(decision: Decision): Promise<ActionResult> {
     const action = decision.nextAction;
     const startTime = Date.now();
+    
+    // 设置执行上下文
+    const userInput = (decision as any).userInput || '';
+    const dataType = (decision as any).dataType;
+    this.setExecutionContext({ userInput, dataType });
     
     // 检查是否有备用策略
     const fallbackStrategy = action.fallbackStrategy;
@@ -70,6 +170,7 @@ export class Actor {
       
       await this.publishActionResult(action, result, executionTime, false);
       
+      this.resetExecutionContext();
       return {
         success: !this.isErrorResult(result),
         result,
@@ -86,6 +187,7 @@ export class Actor {
       
       await this.publishActionResult(action, errorResult, executionTime, true);
       
+      this.resetExecutionContext();
       return {
         success: false,
         result: errorResult,
@@ -101,51 +203,148 @@ export class Actor {
   }
   
   /**
-   * 带重试的执行
+   * 带智能重试和动态工具路由的执行
+   * 核心改进: 使用 ErrorClassifier + ErrorStrategyMapper + DynamicToolRouter
    */
-  private async executeWithRetry(
-    action: Action,
-    fallbackStrategy?: FallbackStrategy
-  ): Promise<unknown> {
-    let lastError: Error | null = null;
-    let currentAction = action;
-    
-    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
-      try {
-        // 尝试执行当前动作
-        return await this.executeAction(currentAction);
-      } catch (error) {
-        lastError = error as Error;
-        
-        // 检查是否可以重试
-        if (!this.isRetryable(error as Error)) {
-          throw error;
-        }
-        
-        // 如果是最后一次尝试，抛出错误
-        if (attempt >= this.retryConfig.maxRetries) {
-          break;
-        }
-        
-        // 计算延迟（指数退避）
-        const delay = Math.min(
-          this.retryConfig.baseDelay * Math.pow(this.retryConfig.backoffMultiplier, attempt),
-          this.retryConfig.maxDelay
-        );
-        
-        console.log(`[Actor] Retry attempt ${attempt + 1} after ${delay}ms delay`);
-        await this.sleep(delay);
-        
-        // 尝试降级策略
-        if (fallbackStrategy && attempt > 0) {
-          currentAction = this.applyFallbackStrategy(currentAction, fallbackStrategy, error as Error);
-          console.log(`[Actor] Applied fallback strategy: ${fallbackStrategy.condition}`);
+    private async executeWithRetry(
+      action: Action,
+      _fallbackStrategy?: FallbackStrategy
+    ): Promise<unknown> {
+      // 检查断路器状态
+      if (this.circuitBreaker && !this.circuitBreaker.canExecute()) {
+        // 记录断路器开启事件
+        oodaMetrics.toolUsage.inc({ tool_name: this.circuitBreaker?.getStats().state || 'unknown', result: 'circuit_open' });
+        throw this.circuitBreaker.getOpenCircuitError();
+      }
+      
+      let lastError: Error | null = null;
+      let currentAction = action;
+      const previousErrors: unknown[] = [];
+      const previousActionTypes: string[] = [];
+      
+      for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+        try {
+          // 尝试执行当前动作（通过断路器保护）
+          const result = this.circuitBreaker 
+            ? await this.circuitBreaker.execute(() => this.executeAction(currentAction))
+            : await this.executeAction(currentAction);
+          
+          // 检查结果是否是错误
+          if (this.isErrorResult(result)) {
+            const errorResult = result as Record<string, unknown>;
+            const errorMessage = errorResult.result || errorResult.message || 'Unknown error';
+            throw new Error(String(errorMessage));
+          }
+          
+          // 记录成功执行
+          if (this.circuitBreaker) {
+            oodaMetrics.toolUsage.inc({ tool_name: action.toolName || 'unknown', result: 'success' });
+          }
+          
+          // 记录成功策略
+          if (action.toolName && this.executionContext.userInput) {
+            this.dataSourceManager.recordStrategyResult({
+              intent: this.executionContext.userInput,
+              dataType: this.executionContext.dataType as any || 'general',
+              toolName: action.toolName,
+              args: JSON.stringify(action.args || {}),
+              success: true,
+              executionTime: Date.now(),
+            });
+          }
+          
+          return result;
+        } catch (error) {
+          lastError = error as Error;
+          previousErrors.push(error);
+          
+          // 记录失败执行
+          if (this.circuitBreaker) {
+            oodaMetrics.toolUsage.inc({ tool_name: action.toolName || 'unknown', result: 'failure' });
+          }
+          
+          // 记录失败策略 (使用新的动态路由)
+          if (action.toolName && this.executionContext.userInput) {
+            const errorType = this.errorClassifier.classify(error).category;
+            this.dataSourceManager.recordStrategyResult({
+              intent: this.executionContext.userInput,
+              dataType: this.executionContext.dataType as any || 'general',
+              toolName: action.toolName,
+              args: JSON.stringify(action.args || {}),
+              success: false,
+              errorType,
+              executionTime: Date.now(),
+            });
+          }
+          
+          // 使用新的 ErrorClassifier 判断是否可重试
+          const classifiedError = this.errorClassifier.classify(error);
+          
+          // 如果是不可恢复的错误，直接抛出
+          if (!classifiedError.retryRecommended) {
+            console.log(`[Actor] Non-recoverable error: ${classifiedError.category}, escalating`);
+            throw error;
+          }
+          
+          // 如果是最后一次尝试，抛出错误
+          if (attempt >= this.retryConfig.maxRetries) {
+            break;
+          }
+          
+          // 使用新的 DynamicToolRouter 生成替代工具
+          console.log(`[Actor] Error classified as: ${classifiedError.category}, generating alternative...`);
+          
+          const alternativeTool = this.dynamicToolRouter.generateAlternativeTool(
+            currentAction.toolName || '',
+            error,
+            {
+              sessionId: this.executionContext.sessionId,
+              userInput: this.executionContext.userInput,
+              availableTools: [], // 由路由器自行判断
+              retryCount: attempt,
+              previousErrors,
+              previousActions: previousActionTypes as any,
+            },
+            attempt
+          );
+          
+          if (alternativeTool) {
+            if (alternativeTool.toolName === 'escalate') {
+              // 需要升级
+              console.log(`[Actor] Escalating: ${alternativeTool.args.reason}`);
+              throw error;
+            }
+            
+            if (alternativeTool.toolName === 'retry_with_delay') {
+              // 退避重试
+              const delay = alternativeTool.args.delay as number || 5000;
+              console.log(`[Actor] Retry with delay: ${delay}ms`);
+              await this.sleep(delay);
+              continue;
+            }
+            
+            // 应用替代工具
+            console.log(`[Actor] Switching to tool: ${alternativeTool.toolName}`);
+            currentAction = {
+              type: 'tool_call',
+              toolName: alternativeTool.toolName,
+              args: alternativeTool.args,
+            };
+            previousActionTypes.push(alternativeTool.toolName);
+          } else {
+            // 没有替代工具，使用原有逻辑
+            const delay = Math.min(
+              this.retryConfig.baseDelay * Math.pow(this.retryConfig.backoffMultiplier, attempt),
+              this.retryConfig.maxDelay
+            );
+            console.log(`[Actor] Fallback retry after ${delay}ms`);
+            await this.sleep(delay);
+          }
         }
       }
+      
+      throw lastError || new Error('Unknown error after retries');
     }
-    
-    throw lastError || new Error('Unknown error after retries');
-  }
   
   /**
    * 判断错误是否可重试
@@ -172,7 +371,7 @@ export class Actor {
    * 数组去重
    */
   private deduplicateArray(arr: string[]): string[] {
-    return [...new Set(arr)];
+    return arr.filter((item, index) => arr.indexOf(item) === index);
   }
   
   /**
@@ -572,7 +771,7 @@ export class Actor {
     existingFeedback: ActionFeedback
   ): Promise<ActionFeedback | null> {
     try {
-      const llm = getLLMService();
+      const llm = await this.getLLM();
       
       const resultStr = typeof result === 'string' 
         ? result 

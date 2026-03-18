@@ -2,8 +2,8 @@
 import { AgentState, Observation, ToolResult, EnvironmentState, ResourceUsage, Anomaly, Pattern, ProactiveExploration, ProjectStructure, DependencyInfo, GitStatus } from '../types';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { BaseOODAAgent, AgentDependencies } from './agent/base';
-import { OODAAgentConfig, AgentInput, AgentOutput, ObserveResult } from './types';
-import { getLLMService } from '../llm/service';
+import { OODAAgentConfig, AgentInput, AgentOutput, ObserveResult, OODAPhaseModelConfig } from './types';
+import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
 import { ChatMessage } from '../llm/provider';
 import { getLLMStrategyDecider } from './llm-strategy';
 
@@ -61,12 +61,33 @@ export class Observer {
   private sessionMemory: SessionMemory;
   private state: ObserverState;
   private enableProactiveExploration: boolean = false;
-  
-  constructor(sessionId: string, enableProactiveExploration: boolean = false) {
+  private phaseModelConfig?: OODAPhaseModelConfig;
+
+  constructor(sessionId: string, enableProactiveExploration: boolean = false, phaseModelConfig?: OODAPhaseModelConfig) {
     this.sessionId = sessionId;
     this.sessionMemory = getSessionMemory(sessionId);
     this.state = observerStateManager.getState(sessionId);
     this.enableProactiveExploration = enableProactiveExploration;
+    this.phaseModelConfig = phaseModelConfig;
+  }
+
+  /**
+   * 获取 Observe 阶段的 LLM 服务
+   * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
+   */
+  private async getLLM(): Promise<LLMService> {
+    if (this.phaseModelConfig?.observe) {
+      const { provider, model } = this.phaseModelConfig.observe;
+      return getLLMServiceWithModel(provider, model);
+    }
+    return getLLMService();
+  }
+
+  /**
+   * 更新阶段模型配置
+   */
+  setPhaseModelConfig(config: OODAPhaseModelConfig) {
+    this.phaseModelConfig = config;
   }
   
   async observe(state: AgentState): Promise<Observation> {
@@ -145,7 +166,7 @@ export class Observer {
    */
   private async detectAnomaliesWithLLM(state: AgentState, toolResults: ToolResult[]): Promise<Anomaly[]> {
     try {
-      const llm = getLLMService();
+      const llm = await this.getLLM();
       
       const toolResultsSummary = toolResults.slice(-5).map(r => 
         `${r.toolName}: ${r.isError ? 'ERROR' : 'OK'} ${r.executionTime}ms`
@@ -204,7 +225,7 @@ ${toolResultsSummary || '无'}
    */
   private async recognizePatternsWithLLM(state: AgentState, toolResults: ToolResult[]): Promise<Pattern[]> {
     try {
-      const llm = getLLMService();
+      const llm = await this.getLLM();
       
       const toolSequence = toolResults.map(r => r.toolName).join(' → ');
       const historySummary = state.history.slice(-10).map(m => 
@@ -723,7 +744,22 @@ ${historySummary}
       return [];
     }
     const memories = await ltMemory.search(query, { limit: 3 });
-    return memories.map(m => m.content);
+    
+    // 去重：基于内容哈希去重，保留第一个出现的
+    const seen = new Set<string>();
+    const uniqueMemories: string[] = [];
+    
+    for (const memory of memories) {
+      const content = memory.content;
+      // 使用内容的前50个字符作为去重键（避免过长）
+      const dedupeKey = content.slice(0, 50);
+      if (!seen.has(dedupeKey)) {
+        seen.add(dedupeKey);
+        uniqueMemories.push(content);
+      }
+    }
+    
+    return uniqueMemories;
   }
 
   private getUserPreferences(): Record<string, unknown> {
