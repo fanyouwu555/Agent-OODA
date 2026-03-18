@@ -8,6 +8,8 @@ import { getHierarchicalMemory, HierarchicalMemoryManager } from '../memory/hier
 import { getLearningModule, LearningModule } from './learning';
 import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsoleStreamingHandler } from './streaming';
 import { OODACycleContext, createOODACycleContext, PhaseResult, LLMInteraction } from './types';
+import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
 
 export { ObserveAgent } from './observe';
 
@@ -685,14 +687,20 @@ export class OODALoop {
     );
     // ========== 学习模块集成结束 ==========
     
-    if (actionResult.feedback.issues.length > 0 || actionResult.feedback.suggestions.length > 0) {
+    // ========== P2: 结果验证模块 ==========
+    // 在返回结果前，验证工具返回的结果是否符合用户需求
+    const originalInput = state.originalInput || '';
+    const validatedResult = await this.validateActionResult(originalInput, actionResult, decision);
+    // ========== 结果验证结束 ==========
+    
+    if (validatedResult.feedback.issues.length > 0 || validatedResult.feedback.suggestions.length > 0) {
       const feedbackEvent = {
         phase: 'feedback' as const,
         data: {
           feedback: {
-            observations: actionResult.feedback.observations,
-            issues: actionResult.feedback.issues,
-            suggestions: actionResult.feedback.suggestions,
+            observations: validatedResult.feedback.observations,
+            issues: validatedResult.feedback.issues,
+            suggestions: validatedResult.feedback.suggestions,
           }
         }
       };
@@ -708,7 +716,7 @@ export class OODALoop {
             id: `call-${state.currentStep}`,
             name: decision.nextAction.toolName,
             args: decision.nextAction.args || {},
-            result: actionResult.result,
+            result: validatedResult.result,
           }
         }
       };
@@ -728,14 +736,14 @@ export class OODALoop {
       history: [...state.history, {
         id: `msg-${Date.now()}`,
         role: 'assistant',
-        content: actionResult.feedback.observations.join(' '),
+        content: validatedResult.feedback.observations.join(' '),
         timestamp: Date.now(),
       }],
       result: {
         // 即使没有完成，也发送反馈内容
-        output: actionResult.feedback.observations.join('\n') || actionResult.feedback.newInformation.join('\n') || '',
+        output: validatedResult.feedback.observations.join('\n') || validatedResult.feedback.newInformation.join('\n') || '',
         steps: [...(state.result?.steps || []), { type: 'action', content: decision.reasoning, timestamp: Date.now() }],
-        metadata: { actionResult, cycleContext },
+        metadata: { actionResult: validatedResult, cycleContext },
       },
     };
   }
@@ -867,5 +875,91 @@ export class OODALoop {
   disableCache(): void {
     this.cacheEnabled = false;
     this.clearCache();
+  }
+
+  /**
+   * ========== 结果验证模块 ==========
+   * 在 Act 阶段执行完成后，验证工具返回的结果是否符合用户需求
+   * 如果不符合，生成改进后的响应
+   */
+  private async validateActionResult(
+    userInput: string,
+    actionResult: ActionResult,
+    decision: Decision
+  ): Promise<ActionResult> {
+    // 只对工具调用类型的结果进行验证
+    if (decision.nextAction.type !== 'tool_call' || !actionResult.success) {
+      return actionResult;
+    }
+
+    const toolName = decision.nextAction.toolName;
+    
+    // 只对搜索类工具进行验证
+    const searchTools = ['web_search', 'web_search_and_fetch', 'search_web', 'webSearch'];
+    if (!searchTools.includes(toolName || '')) {
+      return actionResult;
+    }
+
+    try {
+      const llm = getLLMService();
+      
+      // 获取工具返回的结果
+      const resultData = actionResult.result as any;
+      const results = resultData?.result?.results || resultData?.results || [];
+      
+      // 提取结果内容用于验证
+      const resultSummary = results.slice(0, 3).map((r: any) => {
+        const content = r.content || r.snippet || '';
+        const title = r.title || '';
+        return `标题: ${title}\n内容: ${content.slice(0, 300)}`;
+      }).join('\n\n');
+
+      const validationPrompt = `你是一个结果验证助手。请判断以下工具返回的结果是否回答了用户的问题。
+
+## 用户原始问题
+${userInput}
+
+## 工具返回的结果（部分）
+${resultSummary || '无内容'}
+
+## 判断标准
+1. 结果是否直接回答了用户的问题？
+2. 结果是否提供了用户需要的信息？
+3. 如果是新闻类问题，结果是否包含实际新闻内容（而非仅网站链接）？
+
+## 输出格式（JSON）
+{
+  "isSatisfied": true/false,  // 结果是否满足用户需求
+  "analysis": "简短分析",      // 为什么满足或不满足
+  "improvedResponse": "如果结果不满足，生成改进后的响应"  // 可选
+}
+
+请只输出 JSON，不要有其他内容。`;
+
+      const response = await llm.generate(validationPrompt, { maxTokens: 500 });
+      const content = response.text || '';
+      
+      // 解析 JSON 响应
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log('[ResultValidation] 验证结果:', parsed.isSatisfied, parsed.analysis);
+        
+        // 如果结果不满足用户需求，改进响应
+        if (!parsed.isSatisfied && parsed.improvedResponse) {
+          // 更新 feedback 中的 observations
+          actionResult.feedback.observations = [parsed.improvedResponse];
+          actionResult.feedback.suggestions.push('结果经过 LLM 验证和改进');
+        } else if (parsed.isSatisfied && parsed.analysis) {
+          // 添加分析说明
+          actionResult.feedback.observations.push(`📋 结果分析: ${parsed.analysis}`);
+        }
+      }
+    } catch (error) {
+      console.error('[ResultValidation] 验证失败:', error);
+      // 验证失败不影响原有结果
+    }
+    
+    return actionResult;
   }
 }

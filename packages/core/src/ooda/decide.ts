@@ -757,27 +757,37 @@ ${orientation.constraints.map(c => c.description).join(', ')}
       if (primaryGap.confidence >= 0.6 && primaryGap.suggestedTool) {
         console.log(`[Decide] 基于知识缺口自动选择工具: ${primaryGap.suggestedTool}`);
         
-        // 特殊处理：新闻摘要请求
-        if (primaryGap.type === 'news_summary' || primaryGap.suggestedTool === 'web_search_with_summary') {
-          // 返回带特殊参数的工具调用，通知后续处理生成摘要
-          const searchArgs = primaryGap.suggestedArgs || { query: orientation.primaryIntent.rawInput, limit: 10 };
-          // 添加 summarize 标记
+        // 特殊处理：新闻摘要和实时信息请求
+        // 使用 suggestedTool（web_search_and_fetch）获取实际内容
+        if (primaryGap.type === 'news_summary' || 
+            primaryGap.type === 'realtime_info' ||
+            primaryGap.type === 'web_search') {
+          
+          // 使用知识缺口检测建议的工具和参数
+          const searchArgs = primaryGap.suggestedArgs || { 
+            query: orientation.primaryIntent.rawInput, 
+            limit: 10,
+            fetchContent: true,
+          };
+          
+          // 确保启用内容抓取
+          searchArgs['fetchContent'] = true;
           searchArgs['summarize'] = true;
           searchArgs['summaryStyle'] = 'bullet';
           searchArgs['maxItems'] = 5;
           
           return {
             type: 'tool_call',
-            toolName: 'web_search',
+            toolName: primaryGap.suggestedTool,  // 使用建议的工具（web_search_and_fetch）
             args: searchArgs,
             reasoningChain: [
               {
                 step: 1,
-                thought: `检测到新闻摘要需求: ${primaryGap.description}`,
+                thought: `检测到${primaryGap.type}需求: ${primaryGap.description}`,
               },
               {
                 step: 2,
-                thought: `搜索新闻并准备生成摘要（将使用 LLM 将链接转为摘要）`,
+                thought: `使用 ${primaryGap.suggestedTool} 获取实际内容并生成摘要`,
               },
             ],
           };

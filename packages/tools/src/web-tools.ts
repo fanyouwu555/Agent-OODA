@@ -15,7 +15,7 @@ export interface WebFetchResult {
 }
 
 export interface WebConfig {
-  searchEngine: 'duckduckgo' | 'serper' | 'bing';
+  searchEngine: 'duckduckgo' | 'serper' | 'bing' | 'baidu';
   serperApiKey?: string;
   bingApiKey?: string;
   timeout: number;
@@ -24,7 +24,7 @@ export interface WebConfig {
 
 function getConfig(): WebConfig {
   return {
-    searchEngine: (process.env.SEARCH_ENGINE as WebConfig['searchEngine']) || 'duckduckgo',
+    searchEngine: (process.env.SEARCH_ENGINE as WebConfig['searchEngine']) || 'baidu', // 默认为百度，更适合国内
     serperApiKey: process.env.SERPER_API_KEY,
     bingApiKey: process.env.BING_API_KEY,
     timeout: parseInt(process.env.WEB_REQUEST_TIMEOUT || '30000', 10),
@@ -255,10 +255,93 @@ export async function searchBing(query: string, limit: number = 5): Promise<WebS
   }
 }
 
+/**
+ * 百度搜索 - 国内环境首选搜索引擎
+ * 无需 API key，直接访问
+ */
+export async function searchBaidu(query: string, limit: number = 5): Promise<WebSearchResult[]> {
+  const config = getConfig();
+  
+  try {
+    // 使用百度搜索 API（网页版）
+    const searchUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=${limit * 10}`;
+    
+    const response = await searchWithTimeout(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cookie': 'BDUSS=BaiduSearch', // 模拟 cookie
+      },
+    }, config.timeout);
+    
+    if (!response.ok) {
+      throw new Error(`Baidu search failed: ${response.status}`);
+    }
+    
+    const html = await response.text();
+    const results: WebSearchResult[] = [];
+    
+    // 解析百度搜索结果
+    // 百度结果容器: <div class="result">
+    const resultPattern = /<div[^>]*class="[^"]*result[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([^<]*(?:<[^>]*>[^<]*)*)<\/a>[\s\S]*?<p[^>]*class="[^"]*c-abstract[^"]*"[^>]*>([^<]*(?:<[^>]*>[^<]*)*)<\/p>/gi;
+    
+    // 简化解析：提取标题和链接
+    const titleLinkPattern = /<h3[^>]*class="[^"]*t[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([^<]*(?:<[^>]*>[^<]*)*?)<\/a>[\s\S]*?<\/h3>/gi;
+    const abstractPattern = /<div[^>]*class="[^"]*c-abstract[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+    
+    let titleMatch;
+    let id = 0;
+    
+    while ((titleMatch = titleLinkPattern.exec(html)) !== null && results.length < limit) {
+      const url = titleMatch[1];
+      const titleRaw = titleMatch[2].replace(/<[^>]*>/g, '').trim();
+      const title = titleRaw.slice(0, 100); // 限制标题长度
+      
+      // 获取对应的摘要
+      let snippet = '';
+      const abstractMatch = abstractPattern.exec(html);
+      if (abstractMatch) {
+        snippet = abstractMatch[1].replace(/<[^>]*>/g, '').trim().slice(0, 200);
+      }
+      
+      // 过滤百度内部链接
+      if (url && url.startsWith('http') && !url.includes('baidu.com')) {
+        results.push({
+          title: title || query,
+          url: url,
+          snippet: snippet || `与 "${query}" 相关的搜索结果`,
+        });
+      }
+      
+      id++;
+      if (id > limit * 2) break; // 防止无限循环
+    }
+    
+    // 如果解析失败，使用备用方案：直接返回搜索入口提示
+    if (results.length === 0) {
+      results.push({
+        title: `百度搜索: ${query}`,
+        url: `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`,
+        snippet: `点击查看 "${query}" 的百度搜索结果`,
+      });
+    }
+    
+    return results.slice(0, limit);
+  } catch (error) {
+    console.error('Baidu search error:', error);
+    // 降级到 DuckDuckGo
+    console.warn('[WebSearch] 百度搜索失败，降级到 DuckDuckGo');
+    return searchDuckDuckGo(query, limit);
+  }
+}
+
 export async function webSearch(query: string, limit: number = 5): Promise<WebSearchResult[]> {
   const config = getConfig();
   
   switch (config.searchEngine) {
+    case 'baidu':
+      return searchBaidu(query, limit);
     case 'serper':
       return searchSerper(query, limit);
     case 'bing':

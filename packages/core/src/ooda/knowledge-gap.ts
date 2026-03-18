@@ -220,12 +220,17 @@ export class KnowledgeGapDetector {
       // 计算置信度：匹配越多，置信度越高
       const confidence = Math.min(0.5 + matchedKeywords.length * 0.15, 1.0);
       
+      // 关键改进：使用 web_search_and_fetch 获取实际内容
       return {
         type: KnowledgeGapType.REALTIME_INFO,
         description: `需要实时/最新信息（检测到关键词: ${matchedKeywords.join(', ')}）`,
         confidence,
-        suggestedTool: 'web_search',
-        suggestedArgs: { query: userInput, limit: 5 },
+        suggestedTool: 'web_search_and_fetch',  // 使用带抓取的搜索
+        suggestedArgs: { 
+          query: userInput, 
+          limit: 5,
+          fetchContent: true,  // 获取实际内容
+        },
         triggerKeywords: matchedKeywords,
       };
     }
@@ -274,17 +279,18 @@ export class KnowledgeGapDetector {
         ? Math.min(0.7 + matchedKeywords.length * 0.1, 0.95)
         : 0.75;
       
-      // 关键改进：suggestedTool 使用特殊的处理标识
-      // 这告诉后续系统不只是搜索，还要生成摘要
+      // 关键改进：使用 web_search_and_fetch 并启用内容抓取
+      // 这样可以直接获取新闻实际内容，而不是网站链接
       return {
         type: KnowledgeGapType.NEWS_SUMMARY,
         description: `需要新闻摘要（检测到关键词: ${matchedKeywords.join(', ')}）`,
         confidence,
-        suggestedTool: 'web_search_with_summary',  // 特殊标识：搜索+摘要
+        suggestedTool: 'web_search_and_fetch',  // 改为带抓取的搜索
         suggestedArgs: { 
           query: userInput, 
-          limit: 10,  // 增加 limit 以获取更多结果
-          summarize: true  // 标识需要生成摘要
+          limit: 10,
+          fetchContent: true,  // 启用内容抓取
+          summarize: true,
         },
         triggerKeywords: matchedKeywords,
       };
@@ -296,8 +302,12 @@ export class KnowledgeGapDetector {
         type: KnowledgeGapType.REALTIME_INFO,
         description: `需要实时新闻信息`,
         confidence: 0.65,
-        suggestedTool: 'web_search',
-        suggestedArgs: { query: userInput, limit: 5 },
+        suggestedTool: 'web_search_and_fetch',
+        suggestedArgs: { 
+          query: userInput, 
+          limit: 5,
+          fetchContent: true,
+        },
         triggerKeywords: ['新闻'],
       };
     }
@@ -323,12 +333,17 @@ export class KnowledgeGapDetector {
     if (isQuestion && !hasRecentToolResults) {
       const confidence = Math.min(0.4 + matchedKeywords.length * 0.15, 0.9);
       
+      // 关键改进：使用 web_search_and_fetch 获取实际网页内容
       return {
         type: KnowledgeGapType.WEB_SEARCH,
         description: `需要搜索网络获取信息（检测到关键词: ${matchedKeywords.join(', ')}）`,
         confidence,
-        suggestedTool: 'web_search',
-        suggestedArgs: { query: userInput, limit: 5 },
+        suggestedTool: 'web_search_and_fetch',
+        suggestedArgs: { 
+          query: userInput, 
+          limit: 5,
+          fetchContent: true,  // 获取实际内容
+        },
         triggerKeywords: matchedKeywords,
       };
     }

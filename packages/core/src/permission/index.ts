@@ -116,8 +116,9 @@ export interface PermissionManager {
 // 默认配置
 // ============================================================================
 
+// 开启所有权限 - 默认允许所有操作
 export const DEFAULT_GLOBAL_PERMISSION_CONFIG: GlobalPermissionConfig = {
-  defaultMode: PermissionMode.ASK,
+  defaultMode: PermissionMode.ALLOW,  // 改为 ALLOW，开启所有权限
   tools: {
     // 读取类操作 - 默认允许
     'read': PermissionMode.ALLOW,
@@ -126,16 +127,16 @@ export const DEFAULT_GLOBAL_PERMISSION_CONFIG: GlobalPermissionConfig = {
     'list': PermissionMode.ALLOW,
     'file:read': PermissionMode.ALLOW,
     
-    // 写入类操作 - 需要确认
-    'write': PermissionMode.ASK,
-    'edit': PermissionMode.ASK,
-    'file:write': PermissionMode.ASK,
+    // 写入类操作 - 允许
+    'write': PermissionMode.ALLOW,
+    'edit': PermissionMode.ALLOW,
+    'file:write': PermissionMode.ALLOW,
     
-    // 危险操作 - 需要确认或拒绝
-    'bash': PermissionMode.ASK,
-    'bash:run': PermissionMode.ASK,
-    'delete': PermissionMode.DENY,
-    'file:delete': PermissionMode.DENY,
+    // 危险操作 - 允许
+    'bash': PermissionMode.ALLOW,
+    'bash:run': PermissionMode.ALLOW,
+    'delete': PermissionMode.ALLOW,
+    'file:delete': PermissionMode.ALLOW,
     
     // 网络操作 - 默认允许
     'web_search': PermissionMode.ALLOW,
@@ -143,21 +144,28 @@ export const DEFAULT_GLOBAL_PERMISSION_CONFIG: GlobalPermissionConfig = {
     'webfetch': PermissionMode.ALLOW,
     'web:search': PermissionMode.ALLOW,
     'web:fetch': PermissionMode.ALLOW,
+    'web_search_and_fetch': PermissionMode.ALLOW,
     
-    // 内部操作 - 默认允许
+    // MCP 工具 - 允许
+    'context7': PermissionMode.ALLOW,
+    'grep_app': PermissionMode.ALLOW,
+    
+    // 内部操作 - 允许
     'question': PermissionMode.ALLOW,
     'todowrite': PermissionMode.ALLOW,
     'todoread': PermissionMode.ALLOW,
   },
   skills: {
-    'data_analysis': PermissionMode.ASK,
-    'image_processing': PermissionMode.ASK,
-    'pdf_processing': PermissionMode.ASK,
+    // 所有 skill 默认允许
+    'data_analysis': PermissionMode.ALLOW,
+    'image_processing': PermissionMode.ALLOW,
+    'pdf_processing': PermissionMode.ALLOW,
     'code_analysis': PermissionMode.ALLOW,
-    'api_test': PermissionMode.ASK,
-    'database_query': PermissionMode.ASK,
+    'api_test': PermissionMode.ALLOW,
+    'database_query': PermissionMode.ALLOW,
     'skill-read': PermissionMode.ALLOW,
-    'skill-write': PermissionMode.ASK,
+    'skill-write': PermissionMode.ALLOW,
+    // 动态添加的 skill 也允许
   }
 };
 
@@ -187,6 +195,7 @@ export const DEFAULT_PERMISSION_CONFIG: EnhancedPermissionConfig = {
       'web_fetch': PermissionMode.ALLOW,
       'web:search': PermissionMode.ALLOW,
       'web:fetch': PermissionMode.ALLOW,
+      'web_search_and_fetch': PermissionMode.ALLOW,
     },
     'dangerous': {
       'bash': PermissionMode.DENY,
