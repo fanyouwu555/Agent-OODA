@@ -1,0 +1,149 @@
+// packages/core/src/ooda/fast-response.ts
+// 快速响应策略 - 先响应，后完善
+
+import { LLMService } from '../llm/service';
+import { getLLMConnectionPool } from '../llm/connection-pool';
+import { ChatMessage } from '../llm/provider';
+
+export interface FastResponseResult {
+  /** 立即响应的内容 */
+  immediateResponse: string;
+  /** 是否需要后台详细处理 */
+  needsDetailedProcessing: boolean;
+  /** 意图类型 */
+  intentType: string;
+  /** 置信度 */
+  confidence: number;
+}
+
+/**
+ * 快速意图识别 - 基于关键词和简单规则，无需LLM
+ */
+export function quickIntentRecognition(input: string): {
+  intentType: string;
+  confidence: number;
+  immediateResponse: string;
+  needsDetailedProcessing: boolean;
+} {
+  const lowerInput = input.toLowerCase();
+  
+  // 文件操作类
+  if (/读取|打开|查看.*文件|read|open.*file/i.test(lowerInput)) {
+    return {
+      intentType: 'file_read',
+      confidence: 0.9,
+      immediateResponse: '我来帮您读取文件内容...',
+      needsDetailedProcessing: true,
+    };
+  }
+  
+  if (/写入|保存|创建.*文件|write|save/i.test(lowerInput)) {
+    return {
+      intentType: 'file_write',
+      confidence: 0.9,
+      immediateResponse: '我来帮您处理文件写入...',
+      needsDetailedProcessing: true,
+    };
+  }
+  
+  // 搜索类
+  if (/搜索|查询|查找|search|find|look for/i.test(lowerInput)) {
+    return {
+      intentType: 'search',
+      confidence: 0.85,
+      immediateResponse: '正在为您搜索相关信息...',
+      needsDetailedProcessing: true,
+    };
+  }
+  
+  // 代码类
+  if (/代码|编程|函数|class|function|代码/i.test(lowerInput)) {
+    return {
+      intentType: 'code',
+      confidence: 0.8,
+      immediateResponse: '我来帮您处理代码相关的问题...',
+      needsDetailedProcessing: true,
+    };
+  }
+  
+  // 问候类 - 不需要详细处理
+  if (/你好|您好|hello|hi|hey/i.test(lowerInput) && lowerInput.length < 20) {
+    return {
+      intentType: 'greeting',
+      confidence: 0.95,
+      immediateResponse: '您好！有什么我可以帮助您的吗？',
+      needsDetailedProcessing: false,
+    };
+  }
+  
+  // 默认 - 需要详细处理
+  return {
+    intentType: 'general',
+    confidence: 0.5,
+    immediateResponse: '正在思考您的问题...',
+    needsDetailedProcessing: true,
+  };
+}
+
+/**
+ * 快速流式响应 - 先发送部分内容，再逐步完善
+ */
+export async function* streamFastResponse(
+  input: string,
+  history: ChatMessage[]
+): AsyncGenerator<string, void, unknown> {
+  const pool = getLLMConnectionPool();
+  const llm = await pool.acquire();
+  
+  try {
+    // 1. 首先快速识别意图
+    const quickResult = quickIntentRecognition(input);
+    
+    // 2. 立即返回初步响应
+    yield quickResult.immediateResponse;
+    
+    // 3. 如果不需要详细处理，直接结束
+    if (!quickResult.needsDetailedProcessing) {
+      return;
+    }
+    
+    // 4. 构建简化版提示，要求LLM快速响应
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content: `你是一个高效的AI助手。用户意图：${quickResult.intentType}。
+请直接给出简洁的回答，不要过多解释。如果需要工具调用，请明确说明。`,
+      },
+      ...history.slice(-3), // 只保留最近3条历史，减少上下文
+      {
+        role: 'user',
+        content: input,
+      },
+    ];
+    
+    // 5. 流式获取完整响应
+    const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+    for await (const chunk of llm.stream(prompt, { maxTokens: 800 })) {
+      yield chunk;
+    }
+  } finally {
+    pool.release(llm);
+  }
+}
+
+/**
+ * 并行意图分析 - 同时进行快速识别和LLM分析
+ */
+export async function parallelIntentAnalysis(
+  input: string,
+  onQuickResult?: (result: FastResponseResult) => void
+): Promise<FastResponseResult> {
+  // 立即返回快速识别结果
+  const quickResult = quickIntentRecognition(input);
+  
+  if (onQuickResult) {
+    onQuickResult(quickResult);
+  }
+  
+  return quickResult;
+}

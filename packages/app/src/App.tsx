@@ -1037,8 +1037,8 @@ function App() {
         break;
       case 'result':
         setOodaStep('完成');
-        // 优先使用流式内容，否则使用 event.content
-        const finalContent = streamingContent() || event.content || '';
+        // 优先使用 event.content（完整内容），如果没有则使用流式内容
+        const finalContent = event.content || streamingContent() || '';
         // 将思考步骤转换为 thinking/intent/reasoning
         const steps = thinkingSteps();
         const thinkingContent = steps.filter(s => s.type === 'thinking').map(s => s.content).join('\n');
@@ -1265,33 +1265,57 @@ function App() {
                         <div class="ooda-header">
                           <span class="ooda-title">🔍 OODA 分析过程</span>
                         </div>
-                        <Show when={msg.thinking}>
-                          <div class="ooda-item thinking">
-                            <span class="ooda-icon">💭</span>
-                            <div class="ooda-content">
-                              <span class="ooda-label">思考</span>
-                              <span class="ooda-text">{msg.thinking}</span>
-                            </div>
-                          </div>
-                        </Show>
-                        <Show when={msg.intent}>
-                          <div class="ooda-item intent">
-                            <span class="ooda-icon">🎯</span>
-                            <div class="ooda-content">
-                              <span class="ooda-label">意图</span>
-                              <span class="ooda-text">{msg.intent}</span>
-                            </div>
-                          </div>
-                        </Show>
-                        <Show when={msg.reasoning}>
-                          <div class="ooda-item reasoning">
-                            <span class="ooda-icon">💡</span>
-                            <div class="ooda-content">
-                              <span class="ooda-label">推理</span>
-                              <span class="ooda-text">{msg.reasoning}</span>
-                            </div>
-                          </div>
-                        </Show>
+                        {/* 将思考过程按顺序重组为流式列表 */}
+                        {(() => {
+                          // 将各个部分拆分为行，并标记类型
+                          const steps: Array<{type: string; content: string}> = [];
+                          if (msg.thinking) {
+                            msg.thinking.split('\n').filter(line => line.trim()).forEach(line => {
+                              steps.push({ type: 'thinking', content: line.trim() });
+                            });
+                          }
+                          if (msg.intent) {
+                            msg.intent.split('\n').filter(line => line.trim()).forEach(line => {
+                              steps.push({ type: 'intent', content: line.trim() });
+                            });
+                          }
+                          if (msg.reasoning) {
+                            msg.reasoning.split('\n').filter(line => line.trim()).forEach(line => {
+                              steps.push({ type: 'reasoning', content: line.trim() });
+                            });
+                          }
+                          return (
+                            <For each={steps}>
+                              {(step) => {
+                                const getIcon = () => {
+                                  switch (step.type) {
+                                    case 'thinking': return '💭';
+                                    case 'intent': return '🎯';
+                                    case 'reasoning': return '💡';
+                                    default: return '📝';
+                                  }
+                                };
+                                const getLabel = () => {
+                                  switch (step.type) {
+                                    case 'thinking': return '思考';
+                                    case 'intent': return '意图';
+                                    case 'reasoning': return '推理';
+                                    default: return '分析';
+                                  }
+                                };
+                                return (
+                                  <div class={`ooda-item ${step.type}`}>
+                                    <span class="ooda-icon">{getIcon()}</span>
+                                    <div class="ooda-content">
+                                      <span class="ooda-label">{getLabel()}</span>
+                                      <span class="ooda-text">{step.content}</span>
+                                    </div>
+                                  </div>
+                                );
+                              }}
+                            </For>
+                          );
+                        })()}
                       </div>
                     </Show>
                     <div class="message-content">
@@ -1321,74 +1345,36 @@ function App() {
                         <span class="ooda-title">🔍 OODA 分析过程</span>
                         <span class="ooda-status">进行中...</span>
                       </div>
-                      {/* 流式显示思考步骤 */}
+                      {/* 按时间顺序流式显示所有步骤 */}
                       <For each={thinkingSteps()}>
-                        {(step) => (
-                          <Show when={step.type === 'thinking'}>
-                            <div class="ooda-item thinking">
-                              <span class="ooda-icon">💭</span>
+                        {(step) => {
+                          const getIcon = () => {
+                            switch (step.type) {
+                              case 'thinking': return '💭';
+                              case 'intent': return '🎯';
+                              case 'reasoning': return '💡';
+                              default: return '📝';
+                            }
+                          };
+                          const getLabel = () => {
+                            switch (step.type) {
+                              case 'thinking': return '思考';
+                              case 'intent': return '意图';
+                              case 'reasoning': return '推理';
+                              default: return '分析';
+                            }
+                          };
+                          return (
+                            <div class={`ooda-item ${step.type}`}>
+                              <span class="ooda-icon">{getIcon()}</span>
                               <div class="ooda-content">
-                                <span class="ooda-label">思考</span>
+                                <span class="ooda-label">{getLabel()}</span>
                                 <span class="ooda-text">{step.content}</span>
                               </div>
                             </div>
-                          </Show>
-                        )}
+                          );
+                        }}
                       </For>
-                      <For each={thinkingSteps()}>
-                        {(step) => (
-                          <Show when={step.type === 'intent'}>
-                            <div class="ooda-item intent">
-                              <span class="ooda-icon">🎯</span>
-                              <div class="ooda-content">
-                                <span class="ooda-label">意图</span>
-                                <span class="ooda-text">{step.content}</span>
-                              </div>
-                            </div>
-                          </Show>
-                        )}
-                      </For>
-                      <For each={thinkingSteps()}>
-                        {(step) => (
-                          <Show when={step.type === 'reasoning'}>
-                            <div class="ooda-item reasoning">
-                              <span class="ooda-icon">💡</span>
-                              <div class="ooda-content">
-                                <span class="ooda-label">推理</span>
-                                <span class="ooda-text">{step.content}</span>
-                              </div>
-                            </div>
-                          </Show>
-                        )}
-                      </For>
-                      {/* 备用显示（兼容旧数据） */}
-                      <Show when={currentThinking()}>
-                        <div class="ooda-item thinking">
-                          <span class="ooda-icon">💭</span>
-                          <div class="ooda-content">
-                            <span class="ooda-label">思考</span>
-                            <span class="ooda-text">{currentThinking()}</span>
-                          </div>
-                        </div>
-                      </Show>
-                      <Show when={currentIntent()}>
-                        <div class="ooda-item intent">
-                          <span class="ooda-icon">🎯</span>
-                          <div class="ooda-content">
-                            <span class="ooda-label">意图</span>
-                            <span class="ooda-text">{currentIntent()}</span>
-                          </div>
-                        </div>
-                      </Show>
-                      <Show when={currentReasoning()}>
-                        <div class="ooda-item reasoning">
-                          <span class="ooda-icon">💡</span>
-                          <div class="ooda-content">
-                            <span class="ooda-label">推理</span>
-                            <span class="ooda-text">{currentReasoning()}</span>
-                          </div>
-                        </div>
-                      </Show>
                     </div>
                   </Show>
                   <Show when={streamingContent()}>

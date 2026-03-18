@@ -1,6 +1,7 @@
-import { Observation, Orientation, Intent, Constraint, KnowledgeGap, Pattern, Relationship } from '../types';
+import { Observation, Orientation, Intent, Constraint, KnowledgeGap, Pattern, Relationship, ThinkingCallback } from '../types';
 import { OrientInput, OrientOutput, createOrientInput, OODAPhaseModelConfig } from './types';
-import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
+import { LLMService } from '../llm/service';
+import { getLLMConnectionPool } from '../llm/connection-pool';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { MemoryCompressor } from '../memory/long-term';
@@ -8,10 +9,8 @@ import { KnowledgeGapDetector, KnowledgeGapType, getKnowledgeGapDetector, Detect
 import { ToolSelector, getToolSelector, ToolSelection } from './tool-selector';
 import { getLogger } from '../logger';
 
-/**
- * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
- */
-export type OrientThinkingCallback = (type: 'thinking' | 'intent' | 'analysis', content: string) => void | Promise<void>;
+// 使用统一的 ThinkingCallback 类型
+export type OrientThinkingCallback = ThinkingCallback;
 
 interface AnalysisResult {
   intentType: string;
@@ -102,15 +101,25 @@ export class Orienter {
   }
   
   /**
-   * 获取 Orient 阶段的 LLM 服务
+   * 获取 Orient 阶段的 LLM 服务（使用连接池）
    * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
    */
   private async getLLM(): Promise<LLMService> {
+    const pool = getLLMConnectionPool();
+    
     if (this.phaseModelConfig?.orient) {
       const { provider, model } = this.phaseModelConfig.orient;
-      return getLLMServiceWithModel(provider, model);
+      return pool.acquire({ type: provider as any, model });
     }
-    return getLLMService();
+    return pool.acquire();
+  }
+  
+  /**
+   * 释放 LLM 服务回连接池
+   */
+  private releaseLLM(service: LLMService): void {
+    const pool = getLLMConnectionPool();
+    pool.release(service);
   }
   
   /**
@@ -119,56 +128,6 @@ export class Orienter {
   setPhaseModelConfig(config: OODAPhaseModelConfig) {
     this.phaseModelConfig = config;
   }
-  
-  /**
-   * 同步版本的 orient - 保持原有行为
-   */
-  async orient(observation: Observation): Promise<Orientation> {
-        const analysisResult = await this.performDeepAnalysis(observation);
-        
-        const intent = this.buildIntent(analysisResult, observation.userInput);
-        
-        // ========== 新增：知识缺口自动检测 ==========
-        const detectedGaps = this.knowledgeGapDetector.detect(observation.userInput, observation);
-        const primaryGap = detectedGaps[0];
-        
-        // 如果检测到需要工具调用的知识缺口，更新 intent 类型
-        if (primaryGap && primaryGap.type !== KnowledgeGapType.NONE && primaryGap.confidence >= 0.6) {
-          // 将检测到的知识缺口转换为 intent 参数
-          intent.parameters = {
-            ...intent.parameters,
-            knowledgeGap: primaryGap.type,
-            suggestedTool: primaryGap.suggestedTool,
-            suggestedArgs: primaryGap.suggestedArgs,
-            gapConfidence: primaryGap.confidence,
-            triggerKeywords: primaryGap.triggerKeywords,
-          };
-          
-          console.log(`[Orienter] 检测到知识缺口: ${primaryGap.type}, 建议工具: ${primaryGap.suggestedTool}, 置信度: ${primaryGap.confidence}`);
-        }
-        // ========== 知识缺口检测结束 ==========
-        
-        const constraints = this.identifyConstraints(observation, analysisResult);
-        const knowledgeGaps = this.identifyKnowledgeGaps(observation, intent, analysisResult);
-        const patterns = this.synthesizePatterns(observation, analysisResult);
-        const relationships = this.mapRelationships(observation, analysisResult);
-        
-        return {
-            primaryIntent: intent,
-            relevantContext: {
-                ...observation.context,
-                contextSummary: analysisResult.contextSummary,
-                // 将检测到的知识缺口传递给下一阶段
-                detectedKnowledgeGaps: detectedGaps,
-            },
-            constraints,
-            knowledgeGaps,
-            patterns,
-            relationships,
-            assumptions: analysisResult.assumptions,
-            risks: analysisResult.risks,
-        };
-    }
 
   /**
    * 使用边界类型的 orient 方法 - 解耦版本
@@ -356,6 +315,13 @@ ${toolResultsSummary || '无工具调用'}
 请以JSON格式输出意图分析结果，包含：intentType, parameters, confidence, contextSummary, assumptions, risks。
 
 请只输出JSON。`;
+  }
+
+  /**
+   * 同步版本的 orient - 保持原有行为
+   */
+  async orient(observation: Observation): Promise<Orientation> {
+    return this.orientStream(observation);
   }
 
   /**
@@ -602,7 +568,7 @@ ${toolResultsSummary || '无工具调用'}
   
   private async prepareHistoryForLLM(
     messages: Array<{ role: string; content: string; timestamp?: number }>,
-    llmService: Awaited<ReturnType<typeof getLLMService>>
+    llmService: LLMService
   ): Promise<{ history: ChatMessage[]; summary: string }> {
     const history: ChatMessage[] = [];
     let summary = this.state.conversationSummary;
@@ -644,7 +610,7 @@ ${toolResultsSummary || '无工具调用'}
   
   private async compressMessages(
     messages: Array<{ role: string; content: string }>,
-    llmService: Awaited<ReturnType<typeof getLLMService>>
+    llmService: LLMService
   ): Promise<string> {
     const conversationText = messages
       .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content).slice(0, 500)}`)

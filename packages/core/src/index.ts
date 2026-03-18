@@ -1,12 +1,20 @@
 export * from './event-bus';
 export * from './types';
-export * from './ooda/loop';
+// 从loop导出，但避免重复导出OODAEvent/OODACallback
+export { OODALoop, ObserveAgent } from './ooda/loop';
 export * from './ooda/observe';
 export * from './ooda/decide';
 export * from './ooda/act';
 export * from './ooda/orient';
 export * from './ooda/llm-strategy';
-export type { OODAPhaseModelConfig } from './ooda/types';
+export type { OODAPhaseModelConfig, OODACycleContext, PhaseResult, LLMInteraction } from './ooda/types';
+// 新增: 快速响应和渐进式响应
+export { quickIntentRecognition, streamFastResponse } from './ooda/fast-response';
+export type { FastResponseResult } from './ooda/fast-response';
+export { progressiveResponse } from './ooda/progressive-response';
+export type { ProgressiveResponseOptions, ProgressiveResponseResult } from './ooda/progressive-response';
+// 自测模块
+export { runAllTests, testConfig, testLLMProvider, testProgressiveResponse } from './ooda/self-test';
 // 新增: OODA 数据源和错误处理模块
 export { DataSourceManager, initializeDataSourceManager, setDataSourceManager, getDataSourceManager } from './ooda/data-source';
 export type { DataSourceConfig, DataType, StrategyRecord } from './ooda/data-source';

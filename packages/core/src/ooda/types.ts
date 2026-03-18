@@ -1,38 +1,11 @@
 // packages/core/src/ooda/types.ts
 // OODA 四代理架构类型定义
 
-import { Message, Observation, Orientation, Decision, ActionResult } from '../types';
+import { Message, Observation, Orientation, Decision, ActionResult, OODAEvent, OODACallback } from '../types';
 import { PermissionMode } from '../permission';
 
-// OODA 事件类型 - 从 loop.ts 复制以避免循环依赖
-export interface OODAEvent {
-  phase: 'observe' | 'orient' | 'decide' | 'act' | 'tool_result' | 'complete' | 'feedback' | 'adaptation' | 'streaming_content';
-  data?: {
-    intent?: string;
-    reasoning?: string;
-    options?: string[];
-    selectedOption?: string;
-    chunk?: string;
-    output?: string;
-    toolCall?: {
-      id: string;
-      name: string;
-      args: Record<string, unknown>;
-      result?: unknown;
-    };
-    feedback?: {
-      observations: string[];
-      issues: string[];
-      suggestions: string[];
-    };
-    adaptation?: {
-      reason: string;
-      action: string;
-    };
-  };
-}
-
-export type OODACallback = (event: OODAEvent) => Promise<void> | void;
+// 从 types/index.ts 导入统一的 OODAEvent 和 OODACallback
+export type { OODAEvent, OODACallback };
 
 export interface AgentModelConfig {
   name: string;

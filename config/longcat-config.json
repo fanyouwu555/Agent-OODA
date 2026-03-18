@@ -1,0 +1,37 @@
+{
+  "$schema": "https://ooda-agent.ai/config.json",
+  "activeProvider": "longcat",
+  "activeModel": "LongCat-Flash-Chat",
+  "provider": {
+    "longcat": {
+      "type": "openai-compatible",
+      "name": "LongCat",
+      "options": {
+        "baseURL": "https://api.longcat.chat/openai",
+        "apiKey": "${LONGCAT_API_KEY}"
+      },
+      "models": {
+        "LongCat-Flash-Chat": {
+          "name": "LongCat-Flash-Chat",
+          "temperature": 0.7,
+          "maxTokens": 4000
+        },
+        "LongCat-Flash-Thinking": {
+          "name": "LongCat-Flash-Thinking",
+          "temperature": 0.7,
+          "maxTokens": 4000
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "list": "allow",
+    "write": "ask",
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "ask"
+  }
+}

@@ -1,7 +1,7 @@
-import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult } from '../types';
+import { AgentState, AgentResult, Message, Observation, Orientation, Decision, ActionResult, ThinkingCallback } from '../types';
 import { Observer, resetObserverState, initObserverLastStoredCount, ObserveAgent } from './observe';
-import { Orienter, resetOrienterState, initOrienterCompressedCount, OrientThinkingCallback } from './orient';
-import { Decider, DecideThinkingCallback } from './decide';
+import { Orienter, resetOrienterState, initOrienterCompressedCount } from './orient';
+import { Decider } from './decide';
 import { Actor } from './act';
 import { getSessionMemory, SessionMemory } from '../memory';
 import { getHierarchicalMemory, HierarchicalMemoryManager } from '../memory/hierarchical-memory';
@@ -30,7 +30,7 @@ function debugJson(label: string, data: unknown): void {
   }
 }
 
-type ThinkingCallback = (phase: 'orient' | 'decide', type: string, content: string) => void | Promise<void>;
+// 使用统一的 ThinkingCallback 类型
 
 interface CacheEntry<T> {
   value: T;
@@ -361,9 +361,9 @@ export class OODALoop {
     let orientLLMInteraction: LLMInteraction | undefined;
     
     // 统一使用流式调用，确保完整的推理过程
-    const orientThinkingCallback: OrientThinkingCallback = async (type, content) => {
+    const orientThinkingCallback: ThinkingCallback = async (type, content) => {
       if (this.thinkingCallback) {
-        await this.thinkingCallback('orient', type, content);
+        await this.thinkingCallback('orient', type as string, content as string);
       }
     };
     orientation = await this.orienter.orientStream(observation, orientThinkingCallback, state.validationFeedback);
@@ -463,9 +463,9 @@ export class OODALoop {
     let decideLLMInteraction: LLMInteraction | undefined;
     
     // 统一使用流式调用，确保完整的推理过程
-    const decideThinkingCallback: DecideThinkingCallback = async (type, content) => {
+    const decideThinkingCallback: ThinkingCallback = async (type, content) => {
       if (this.thinkingCallback) {
-        await this.thinkingCallback('decide', type, content);
+        await this.thinkingCallback('decide', type as string, content as string);
       }
     };
     decision = await this.decider.decideStream(orientation, decideThinkingCallback);

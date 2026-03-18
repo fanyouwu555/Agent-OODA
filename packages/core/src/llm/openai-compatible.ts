@@ -179,26 +179,36 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const messages = this.buildMessages(prompt, options);
     const url = `${this.baseUrl}/chat/completions`;
     
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages.map(m => ({
-          role: m.role,
-          content: m.content,
-        })),
-        temperature: options?.temperature ?? this.temperature,
-        max_tokens: options?.maxTokens ?? this.maxTokens,
-        stream: true,
-      }),
-    });
+    console.log(`[OpenAI-Compatible] Streaming request to ${url}, model: ${this.model}`);
+    
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: messages.map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+          temperature: options?.temperature ?? this.temperature,
+          max_tokens: options?.maxTokens ?? this.maxTokens,
+          stream: true,
+        }),
+      });
+    } catch (fetchError) {
+      console.error(`[OpenAI-Compatible] Fetch error:`, fetchError);
+      throw new Error(`Failed to connect to LLM service at ${url}: ${fetchError}`);
+    }
     
     if (!response.ok) {
-      throw new Error(`API error: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      console.error(`[OpenAI-Compatible] API error: ${response.status} ${response.statusText}`, errorText);
+      throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
     
     const reader = response.body?.getReader();
@@ -207,23 +217,58 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
     
     const decoder = new TextDecoder();
+    let totalTokens = 0;
     
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-      
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.substring(6).trim();
-          if (data === '[DONE]') continue;
+    try {
+      let lineCount = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        
+        // 调试：打印原始响应数据
+        if (lineCount === 0) {
+          console.log('[OpenAI-Compatible] Raw response chunk:', chunk.substring(0, 500));
+        }
+        
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          lineCount++;
+          
+          // 处理空的 data: 行
+          if (line === 'data:' || line === 'data: ') {
+            continue;
+          }
+          
+          // 处理 [DONE]
+          if (line === 'data: [DONE]' || line === '[DONE]') {
+            continue;
+          }
+          
+          // 尝试解析 JSON（LongCat 可能直接返回 JSON，没有 data: 前缀）
+          let data: string;
+          if (line.startsWith('data: ')) {
+            data = line.substring(6).trim();
+          } else if (line.trim().startsWith('{')) {
+            data = line.trim();
+          } else {
+            continue;
+          }
+          
+          if (!data) continue;
           
           try {
             const parsed = JSON.parse(data);
+            // 调试：打印第一个响应的结构
+            if (totalTokens === 0) {
+              console.log('[OpenAI-Compatible] First response structure:', JSON.stringify(parsed, null, 2).substring(0, 500));
+            }
+            // LongCat 使用 delta.content
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) {
+              totalTokens++;
               if (options?.onToken) {
                 options.onToken(content);
               }
@@ -231,9 +276,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
             }
           } catch (e) {
             // Ignore parsing errors
+            console.debug('[OpenAI-Compatible] Parse error for line:', line.substring(0, 100));
           }
         }
       }
+      console.log(`[OpenAI-Compatible] Stream completed, total tokens: ${totalTokens}`);
+    } catch (streamError) {
+      console.error(`[OpenAI-Compatible] Stream error:`, streamError);
+      throw streamError;
     }
   }
 }

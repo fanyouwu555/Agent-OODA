@@ -1,7 +1,7 @@
 // packages/app/src/services/event-client.ts
 // 统一事件客户端 - 替换 WebSocket + SSE 双通道
 
-import { createSignal, onCleanup } from 'solid-js';
+import { createSignal } from 'solid-js';
 
 // 事件类型定义（与后端 SSEEvent 对应）
 export interface FrontendEvent {
@@ -42,15 +42,7 @@ export function createEventClient(options: EventClientOptions = {}) {
   
   const baseUrl = options.baseUrl || '';
   
-  // 构建事件源 URL
-  const buildUrl = (sessionId?: string) => {
-    const url = sessionId 
-      ? `${baseUrl}/api/events?session=${encodeURIComponent(sessionId)}`
-      : `${baseUrl}/api/events`;
-    return url;
-  };
-  
-  // 事件分发
+  // 事件分发 - 直接处理，不批处理
   const emit = (event: FrontendEvent) => {
     // 精确匹配：namespace.action
     const exactKey = `${event.namespace}.${event.action}`;
@@ -135,18 +127,33 @@ export function createEventClient(options: EventClientOptions = {}) {
     });
 
     // 监听 OODA 流式事件 (thinking, intent, reasoning, content, result 等)
-    const oodaEventTypes = ['thinking', 'intent', 'reasoning', 'content', 'result', 'tool_call', 'tool_result'];
+    const oodaEventTypes = ['thinking', 'intent', 'reasoning', 'content', 'tool_call', 'tool_result'];
     oodaEventTypes.forEach(eventType => {
       eventSource!.addEventListener(eventType, (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data);
-          console.log(`[EventClient] Received ${eventType} event:`, data);
-          setLastEvent({ type: eventType, ...data });
+          const event = { type: eventType, ...data };
+          // 直接处理，不批处理
+          setLastEvent(event);
+          emit(event);
           emitOODA(eventType, data);
         } catch (err) {
           console.error(`[EventClient] Failed to parse ${eventType} event:`, err);
         }
       });
+    });
+    
+    // result事件直接处理
+    eventSource!.addEventListener('result', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const event = { type: 'result', ...data };
+        setLastEvent(event);
+        emit(event);
+        emitOODA('result', data);
+      } catch (err) {
+        console.error('[EventClient] Failed to parse result event:', err);
+      }
     });
     
     // 订阅特定命名空间的事件
@@ -168,6 +175,14 @@ export function createEventClient(options: EventClientOptions = {}) {
     } catch (err) {
       console.error('[EventClient] Failed to parse namespace event:', err);
     }
+  };
+  
+  // 构建事件源 URL
+  const buildUrl = (sessionId?: string) => {
+    const url = sessionId 
+      ? `${baseUrl}/api/events?session=${encodeURIComponent(sessionId)}`
+      : `${baseUrl}/api/events`;
+    return url;
   };
   
   // 断开连接
@@ -195,67 +210,61 @@ export function createEventClient(options: EventClientOptions = {}) {
     return () => handlers.get(eventPattern)?.delete(handler);
   };
   
-  // 便捷订阅方法
-  const onMessagePart = (handler: (payload: { part: string; index: number; totalLength: number; isComplete: boolean }) => void) => {
-    return on('message.part', (event) => handler(event.payload as any));
+  // 订阅 OODA 事件
+  const onOODA = (eventType: string, handler: OODAEventHandler): (() => void) => {
+    if (!oodaHandlers.has(eventType)) {
+      oodaHandlers.set(eventType, new Set());
+    }
+    oodaHandlers.get(eventType)!.add(handler);
+    
+    return () => oodaHandlers.get(eventType)?.delete(handler);
   };
   
-  const onMessageCompleted = (handler: (payload: { messageId: string; fullContent: string }) => void) => {
-    return on('message.completed', (event) => handler(event.payload as any));
+  // 订阅消息片段
+  const onMessagePart = (handler: (content: string) => void) => {
+    return onOODA('content', (event) => {
+      if (event.content) handler(event.content);
+    });
   };
   
-  const onPermissionAsked = (handler: (payload: { confirmationId: string; toolName: string; args: unknown }) => void) => {
-    return on('permission.asked', (event) => handler(event.payload as any));
+  // 订阅消息完成
+  const onMessageCompleted = (handler: (content: string) => void) => {
+    return onOODA('result', (event) => {
+      if (event.content) handler(event.content);
+    });
   };
   
-  const onToolCall = (handler: (payload: { toolId: string; toolName: string; status: string }) => void) => {
-    return on('tool.call', (event) => handler(event.payload as any));
+  // 订阅会话更新
+  const onSessionUpdated = (handler: (sessionId: string) => void) => {
+    return on('session.*', (event) => {
+      if (event.sessionId) handler(event.sessionId);
+    });
   };
   
-  const onToolResult = (handler: (payload: { toolId: string; toolName: string; result: unknown; error?: string }) => void) => {
-    return on('tool.result', (event) => handler(event.payload as any));
-  };
-  
-  const onSessionUpdated = (handler: (payload: { sessionId: string; messages?: unknown[] }) => void) => {
-    return on('session.updated', (event) => handler(event.payload as any));
-  };
-  
-  // 自动连接（如果启用）
+  // 自动连接
   if (options.autoConnect !== false) {
-    // 延迟连接，确保 DOM 准备好
-    setTimeout(() => connect(), 100);
+    connect();
   }
   
   return {
-    // 状态
     isConnected,
     lastEvent,
-    
-    // 连接管理
     connect,
     disconnect,
-    
-    // 订阅
     on,
-    
-    // OODA 事件订阅
-    onOODA: (type: string, handler: OODAEventHandler): (() => void) => {
-      if (!oodaHandlers.has(type)) {
-        oodaHandlers.set(type, new Set());
-      }
-      oodaHandlers.get(type)!.add(handler);
-      return () => oodaHandlers.get(type)?.delete(handler);
-    },
-    
-    // 便捷方法
+    onOODA,
     onMessagePart,
     onMessageCompleted,
-    onPermissionAsked,
-    onToolCall,
-    onToolResult,
     onSessionUpdated,
   };
 }
 
-// 导出类型
-export type EventClient = ReturnType<typeof createEventClient>;
+// 默认客户端实例
+let defaultClient: ReturnType<typeof createEventClient> | null = null;
+
+export function getDefaultEventClient(): ReturnType<typeof createEventClient> {
+  if (!defaultClient) {
+    defaultClient = createEventClient({ autoConnect: false });
+  }
+  return defaultClient;
+}

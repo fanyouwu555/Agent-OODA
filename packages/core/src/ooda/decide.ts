@@ -9,17 +9,17 @@ import {
   RiskAssessment,
   IdentifiedRisk,
   ReasoningStep,
-  FallbackStrategy
+  FallbackStrategy,
+  ThinkingCallback
 } from '../types';
 import { OODAPhaseModelConfig } from './types';
-import { getLLMService, getLLMServiceWithModel, LLMService } from '../llm/service';
+import { LLMService } from '../llm/service';
+import { getLLMConnectionPool } from '../llm/connection-pool';
 import { ChatMessage, StreamOptions } from '../llm/provider';
 import { ToolSelector, getToolSelector } from './tool-selector';
 
-/**
- * 流式思考回调类型 - 用于实时推送 LLM 生成过程中的思考内容
- */
-export type DecideThinkingCallback = (type: 'thinking' | 'decision' | 'reasoning', content: string) => void | Promise<void>;
+// 使用统一的 ThinkingCallback 类型
+export type DecideThinkingCallback = ThinkingCallback;
 
 interface DecisionAnalysis {
   problemStatement: string;
@@ -41,15 +41,25 @@ export class Decider {
   }
 
   /**
-   * 获取 Decide 阶段的 LLM 服务
+   * 获取 Decide 阶段的 LLM 服务（使用连接池）
    * 如果配置了阶段模型，使用配置的模型；否则使用默认模型
    */
   private async getLLM(): Promise<LLMService> {
+    const pool = getLLMConnectionPool();
+    
     if (this.phaseModelConfig?.decide) {
       const { provider, model } = this.phaseModelConfig.decide;
-      return getLLMServiceWithModel(provider, model);
+      return pool.acquire({ type: provider as any, model });
     }
-    return getLLMService();
+    return pool.acquire();
+  }
+  
+  /**
+   * 释放 LLM 服务回连接池
+   */
+  private releaseLLM(service: LLMService): void {
+    const pool = getLLMConnectionPool();
+    pool.release(service);
   }
 
   /**

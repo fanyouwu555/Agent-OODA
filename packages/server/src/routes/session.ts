@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS, getToolRegistry } from '@ooda-agent/core';
+import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS, getToolRegistry, progressiveResponse } from '@ooda-agent/core';
 import { initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import { detailedLogger } from '../utils/detailed-logger';
@@ -173,6 +173,61 @@ sessionRoutes
       };
       
       try {
+        // 使用渐进式响应机制（更快的响应速度）
+        const useProgressive = process.env.USE_PROGRESSIVE_RESPONSE !== 'false'; // 默认启用
+        
+        if (useProgressive) {
+          console.log(`[DEBUG] Using progressive response for session: ${sessionId}`);
+          detailedLogger.logOODAPhase('start', sessionId, { historyLength: history.length, mode: 'progressive' });
+          
+          try {
+            const result = await progressiveResponse({
+              input: message,
+              history: history.map(h => ({ role: h.role as any, content: h.content })),
+              sessionId,
+              onEvent: async (type, data) => {
+                detailedLogger.debug('SSE', `Sending ${type} event`, { type, dataLength: JSON.stringify(data).length }, sessionId);
+                await sendEvent(type, data);
+              },
+            });
+            
+            detailedLogger.info('OODA', `Progressive response completed`, { executionTime: result.executionTime, outputLength: result.output.length }, sessionId);
+            
+            // 保存消息到数据库（result 事件已在 progressiveResponse 中发送）
+            const assistantMessageId = `msg-${Date.now()}-response`;
+            store.messages.create({
+              id: assistantMessageId,
+              sessionId,
+              role: 'assistant',
+              content: result.output,
+              timestamp: Date.now(),
+            });
+            
+            const allMessages = store.messages.findBySessionId(sessionId);
+            publishToSession(sessionId, 'session', 'updated', { messages: allMessages });
+            
+            await stream.writeSSE({
+              event: 'end',
+              data: JSON.stringify({ type: 'end', status: 'completed' }),
+            });
+            
+            console.log(`[Response] Progressive response completed in ${result.executionTime}ms`);
+            return;
+          } catch (progressiveError) {
+            detailedLogger.error('OODA', `Progressive response failed`, { error: String(progressiveError), stack: (progressiveError as Error).stack }, sessionId);
+            console.error(`[ERROR] Progressive response failed:`, progressiveError);
+            
+            // 发送错误信息给客户端
+            await sendEvent('error', { content: `处理请求时出错: ${progressiveError}` });
+            await stream.writeSSE({
+              event: 'end',
+              data: JSON.stringify({ type: 'end', status: 'error', error: String(progressiveError) }),
+            });
+            return;
+          }
+        }
+        
+        // 原有的 OODA 流程（作为 fallback）
         await sendEvent('thinking', { content: '正在分析您的请求...' });
         console.log(`[DEBUG] Creating OODALoop for session: ${sessionId}`);
         detailedLogger.logOODAPhase('start', sessionId, { historyLength: history.length });
@@ -291,16 +346,10 @@ sessionRoutes
               }
               break;
             case 'complete':
-              // OODA 循环完成，发送最终输出
+              // OODA 循环完成，记录日志（content 事件由 setStreamContentCallback 发送）
               const eventDataComplete = event.data as { output?: string } | undefined;
               const outputComplete = eventDataComplete?.output || '';
               console.log(`[DEBUG] complete event, output length: ${outputComplete.length}`);
-              
-              // 发送完成事件，包含最终输出内容
-              await sendEvent('content', { 
-                content: outputComplete,
-                isComplete: true
-              });
               
               detailedLogger.logOODAComplete(sessionId, outputComplete, { metadata: oodaMetadata });
               break;

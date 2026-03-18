@@ -290,6 +290,55 @@ export interface ActionFeedback {
   suggestions: string[];
 }
 
+// =========================================
+// 统一回调类型定义 - 合并重复定义
+// =========================================
+
+/** OODA阶段类型 */
+export type OODAPhase = 'observe' | 'orient' | 'decide' | 'act';
+
+/** 思考回调类型 - 统一替代 OrientThinkingCallback/DecideThinkingCallback
+ * 兼容2参数和3参数调用
+ */
+export type ThinkingCallback = (
+  phaseOrType: OODAPhase | string,
+  typeOrContent: string,
+  content?: string
+) => void | Promise<void>;
+
+/** 流式内容回调 */
+export type StreamContentCallback = (chunk: string, isComplete: boolean) => Promise<void> | void;
+
+/** OODA回调 */
+export interface OODAEvent {
+  phase: OODAPhase | 'tool_result' | 'complete' | 'feedback' | 'adaptation' | 'streaming_content';
+  data?: {
+    intent?: string;
+    reasoning?: string;
+    options?: string[];
+    selectedOption?: string;
+    chunk?: string;
+    output?: string;
+    toolCall?: {
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+      result?: unknown;
+    };
+    feedback?: {
+      observations: string[];
+      issues: string[];
+      suggestions: string[];
+    };
+    adaptation?: {
+      reason: string;
+      action: string;
+    };
+  };
+}
+
+export type OODACallback = (event: OODAEvent) => Promise<void> | void;
+
 /**
  * 主动探索结果 - 扩展的环境信息
  */

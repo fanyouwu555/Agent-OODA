@@ -198,7 +198,7 @@ export class DatabaseManager {
       this.pendingWrites.push({ sql, params });
       
       if (this.pendingWrites.length >= this.maxPendingWrites) {
-        this.flush();
+        this.flushAsync();
       }
       return { changes: 0 };
     } else {
@@ -216,7 +216,44 @@ export class DatabaseManager {
     return { changes };
   }
 
+  /** 同步刷新（保持兼容） */
   flush(): void {
+    this.flushSync();
+  }
+
+  /** 异步刷新 - 不阻塞主线程 */
+  async flushAsync(): Promise<void> {
+    if (!this.db || this.pendingWrites.length === 0) return;
+    
+    const writes = [...this.pendingWrites];
+    this.pendingWrites = [];
+    
+    // 使用 setImmediate 将写入操作推迟到下一个事件循环
+    return new Promise((resolve, reject) => {
+      setImmediate(() => {
+        try {
+          this.db!.run('BEGIN TRANSACTION');
+          
+          for (const { sql, params } of writes) {
+            this.db!.run(sql, params);
+          }
+          
+          this.db!.run('COMMIT');
+          this.save();
+          resolve();
+        } catch (error) {
+          this.db!.run('ROLLBACK');
+          console.error('[Storage] Batch write failed:', error);
+          // 失败时将写回队列
+          this.pendingWrites = [...writes, ...this.pendingWrites];
+          reject(error);
+        }
+      });
+    });
+  }
+
+  /** 同步刷新 */
+  private flushSync(): void {
     if (!this.db || this.pendingWrites.length === 0) return;
     
     const writes = [...this.pendingWrites];

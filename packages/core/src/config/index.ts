@@ -104,7 +104,7 @@ export interface OODAAgentConfig {
 
 export const DEFAULT_CONFIG: OODAAgentConfig = {
   $schema: 'https://ooda-agent.ai/config.json',
-  activeProvider: 'local-ollama',
+  activeProvider: process.env.LONGCAT_API_KEY ? 'longcat' : 'local-ollama',
   provider: {
     'local-ollama': {
       type: 'ollama',
@@ -119,6 +119,21 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
           name: 'qwen3:4b',
           temperature: 0.7,
           maxTokens: 1024  // 减少 maxTokens
+        }
+      }
+    },
+    'longcat': {
+      type: 'openai-compatible',
+      name: 'LongCat',
+      options: {
+        baseURL: 'https://api.longcat.chat/openai',
+        apiKey: process.env.LONGCAT_API_KEY || ''
+      },
+      models: {
+        'LongCat-Flash-Chat': {
+          name: 'LongCat-Flash-Chat',
+          temperature: 0.7,
+          maxTokens: 4000
         }
       }
     }
@@ -209,7 +224,27 @@ export class ConfigManager {
   private config: OODAAgentConfig;
   
   constructor(config: OODAAgentConfig = DEFAULT_CONFIG) {
-    this.config = resolveConfigEnvVars({ ...DEFAULT_CONFIG, ...config }) as OODAAgentConfig;
+    // 深度合并配置
+    this.config = resolveConfigEnvVars(this.deepMerge(DEFAULT_CONFIG, config)) as OODAAgentConfig;
+  }
+  
+  private deepMerge(target: any, source: any): any {
+    if (!source) return target;
+    if (!target) return source;
+    
+    const result = { ...target };
+    
+    for (const key in source) {
+      if (source.hasOwnProperty(key)) {
+        if (typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])) {
+          result[key] = this.deepMerge(target[key], source[key]);
+        } else {
+          result[key] = source[key];
+        }
+      }
+    }
+    
+    return result;
   }
   
   getConfig(): OODAAgentConfig {
@@ -249,6 +284,7 @@ export class ConfigManager {
     const providerConfig = this.config.provider?.[providerName];
 
     if (!providerConfig) {
+      console.error(`[Config] Provider ${providerName} not found`);
       return null;
     }
 
@@ -260,13 +296,21 @@ export class ConfigManager {
 
     const type = providerConfig.type || 'ollama';
 
+    // 获取 apiKey 和 baseUrl
+    const apiKey = (providerConfig.options?.apiKey as string) || providerConfig.apiKey || '';
+    const baseUrl = (providerConfig.options?.baseURL as string) || providerConfig.baseUrl || '';
+
+    console.log(`[Config] Provider: ${providerName}, Type: ${type}, Model: ${model}`);
+    console.log(`[Config] API Key present: ${apiKey ? 'Yes (length: ' + apiKey.length + ')' : 'No'}`);
+    console.log(`[Config] Base URL: ${baseUrl}`);
+
     switch (type) {
       case 'kimi':
         return {
           type: 'kimi',
           model,
-          apiKey: (providerConfig.options?.apiKey as string) || providerConfig.apiKey || '',
-          baseUrl: (providerConfig.options?.baseURL as string) || providerConfig.baseUrl || 'https://api.moonshot.cn/v1',
+          apiKey,
+          baseUrl: baseUrl || 'https://api.moonshot.cn/v1',
           temperature,
           maxTokens,
         };
@@ -275,8 +319,8 @@ export class ConfigManager {
         return {
           type: 'openai-compatible',
           model,
-          apiKey: (providerConfig.options?.apiKey as string) || providerConfig.apiKey || '',
-          baseUrl: (providerConfig.options?.baseURL as string) || providerConfig.baseUrl || '',
+          apiKey,
+          baseUrl,
           temperature,
           maxTokens,
         };
