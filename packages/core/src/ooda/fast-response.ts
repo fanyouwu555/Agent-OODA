@@ -103,12 +103,22 @@ export function quickIntentRecognition(input: string): {
     };
   }
 
-  // 代码类
-  if (/代码|编程|函数|class|function|代码/i.test(lowerInput)) {
+  // 时间查询类 - 当前时间、日期
+  if (/现在.*几点|现在.*时间|当前.*时间|几点了|时间.*多少|今天.*几号|今天.*日期|现在.*日期/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_time',
+      confidence: 0.95,
+      immediateResponse: '正在为您查询当前时间...',
+      needsDetailedProcessing: true,
+    };
+  }
+
+  // 代码类 - 扩展匹配关键词
+  if (/代码|编程|函数|class|function|def |import |return |if __name__|print\(|game|游戏|程序|写.*个|实现|python|java|javascript|js|ts|typescript|c\+\+|go|rust/i.test(lowerInput)) {
     return {
       intentType: 'code',
       confidence: 0.8,
-      immediateResponse: '我来帮您处理代码相关的问题...',
+      immediateResponse: '我来帮您编写代码...',
       needsDetailedProcessing: true,
     };
   }

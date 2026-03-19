@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS, getToolRegistry, progressiveResponse } from '@ooda-agent/core';
+import { OODALoop, getConfigManager, reinitializeLLMService, getPermissionManager, CONSTANTS, getToolRegistry, progressiveResponse, optimizedResponse, smartResponse } from '@ooda-agent/core';
 import { initializeTools } from '@ooda-agent/tools';
 import { createStorage } from '@ooda-agent/storage';
 import { detailedLogger } from '../utils/detailed-logger';
@@ -177,15 +177,15 @@ sessionRoutes
       };
       
       try {
-        // 使用渐进式响应机制（更快的响应速度）
-        const useProgressive = process.env.USE_PROGRESSIVE_RESPONSE !== 'false'; // 默认启用
-        
-        if (useProgressive) {
-          console.log(`[DEBUG] Using progressive response for session: ${sessionId}`);
-          detailedLogger.logOODAPhase('start', sessionId, { historyLength: history.length, mode: 'progressive' });
-          
+        // 使用智能响应策略（所有请求都调用LLM，但优化Prompt）
+        const useSmart = process.env.USE_SMART_RESPONSE !== 'false'; // 默认启用
+
+        if (useSmart) {
+          console.log(`[DEBUG] Using smart response for session: ${sessionId}`);
+          detailedLogger.logOODAPhase('start', sessionId, { historyLength: history.length, mode: 'smart' });
+
           try {
-            const result = await progressiveResponse({
+            const result = await smartResponse({
               input: message,
               history: history.map(h => ({ role: h.role as any, content: h.content })),
               sessionId,
@@ -194,10 +194,10 @@ sessionRoutes
                 await sendEvent(type, data);
               },
             });
-            
-            detailedLogger.info('OODA', `Progressive response completed`, { executionTime: result.executionTime, outputLength: result.output.length }, sessionId);
-            
-            // 保存消息到数据库（result 事件已在 progressiveResponse 中发送）
+
+            detailedLogger.info('OODA', `Smart response completed`, { executionTime: result.executionTime, outputLength: result.output.length, optimization: result.optimization }, sessionId);
+
+            // 保存消息到数据库（result 事件已在 smartResponse 中发送）
             const assistantMessageId = `msg-${Date.now()}-response`;
             store.messages.create({
               id: assistantMessageId,
@@ -206,26 +206,26 @@ sessionRoutes
               content: result.output,
               timestamp: Date.now(),
             });
-            
+
             const allMessages = store.messages.findBySessionId(sessionId);
             publishToSession(sessionId, 'session', 'updated', { messages: allMessages });
-            
+
             await stream.writeSSE({
               event: 'end',
-              data: JSON.stringify({ type: 'end', status: 'completed' }),
+              data: JSON.stringify({ type: 'end', status: 'completed', optimization: result.optimization }),
             });
-            
-            console.log(`[Response] Progressive response completed in ${result.executionTime}ms`);
+
+            console.log(`[Response] Smart response completed in ${result.executionTime}ms (optimization: ${result.optimization})`);
             return;
-          } catch (progressiveError) {
-            detailedLogger.error('OODA', `Progressive response failed`, { error: String(progressiveError), stack: (progressiveError as Error).stack }, sessionId);
-            console.error(`[ERROR] Progressive response failed:`, progressiveError);
-            
+          } catch (smartError) {
+            detailedLogger.error('OODA', `Smart response failed`, { error: String(smartError), stack: (smartError as Error).stack }, sessionId);
+            console.error(`[ERROR] Smart response failed:`, smartError);
+
             // 发送错误信息给客户端
-            await sendEvent('error', { content: `处理请求时出错: ${progressiveError}` });
+            await sendEvent('error', { content: `处理请求时出错: ${smartError}` });
             await stream.writeSSE({
               event: 'end',
-              data: JSON.stringify({ type: 'end', status: 'error', error: String(progressiveError) }),
+              data: JSON.stringify({ type: 'end', status: 'error', error: String(smartError) }),
             });
             return;
           }

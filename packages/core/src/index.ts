@@ -13,6 +13,18 @@ export { quickIntentRecognition, streamFastResponse } from './ooda/fast-response
 export type { FastResponseResult } from './ooda/fast-response';
 export { progressiveResponse } from './ooda/progressive-response';
 export type { ProgressiveResponseOptions, ProgressiveResponseResult } from './ooda/progressive-response';
+// 新增: 优化响应策略（策略优化版）
+export { optimizedResponse } from './ooda/optimized-response';
+export type { OptimizedResponseOptions, OptimizedResponseResult } from './ooda/optimized-response';
+// 新增: 智能响应策略（所有请求都调用LLM，但优化Prompt）
+export { smartResponse } from './ooda/smart-response';
+export type { SmartResponseOptions, SmartResponseResult } from './ooda/smart-response';
+// 新增: 完整响应生成器（自动续传机制）
+export { streamCompleteResponse, isContentComplete } from './llm/complete-response.js';
+export type { CompleteResponseOptions, CompleteResponseResult, CompleteResponseChunk } from './llm/complete-response.js';
+// 新增: 终极响应生成器（分块生成 + 强制完整性验证）
+export { generateUltimateResponse, checkContentCompleteness } from './llm/ultimate-response.js';
+export type { UltimateResponseOptions, UltimateResponseResult } from './llm/ultimate-response.js';
 // 自测自修自检系统
 export * from './diagnostics';
 // 新增: OODA 数据源和错误处理模块

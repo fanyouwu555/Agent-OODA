@@ -543,6 +543,11 @@ function App() {
   const [oodaStep, setOodaStep] = createSignal<string>('');
   const [streamingContent, setStreamingContent] = createSignal<string>('');
   const [isStreaming, setIsStreaming] = createSignal<boolean>(false);
+
+  // 流式内容缓冲区 - 用于批量更新，避免频繁渲染
+  let streamingBuffer = '';
+  let streamingBufferTimer: ReturnType<typeof setTimeout> | null = null;
+  const STREAMING_BUFFER_DELAY = 50; // 50ms 缓冲延迟
   
   // SSE 事件日志
   const [sseLogs, setSseLogs] = createSignal<Array<{type: string; content?: string; time: number}>>([]);
@@ -1029,14 +1034,36 @@ function App() {
         }
         break;
       case 'content':
-        // 流式内容事件 - 增量更新消息
+        // 流式内容事件 - 使用缓冲区批量更新
         if (event.content !== undefined) {
           setIsStreaming(true);
-          setStreamingContent((prev) => prev + event.content);
+          streamingBuffer += event.content;
+
+          // 清除之前的定时器
+          if (streamingBufferTimer) {
+            clearTimeout(streamingBufferTimer);
+          }
+
+          // 设置新的定时器，批量更新
+          streamingBufferTimer = setTimeout(() => {
+            if (streamingBuffer) {
+              setStreamingContent((prev) => prev + streamingBuffer);
+              streamingBuffer = '';
+            }
+          }, STREAMING_BUFFER_DELAY);
         }
         break;
       case 'result':
         setOodaStep('完成');
+        // 刷新缓冲区
+        if (streamingBufferTimer) {
+          clearTimeout(streamingBufferTimer);
+          streamingBufferTimer = null;
+        }
+        if (streamingBuffer) {
+          setStreamingContent((prev) => prev + streamingBuffer);
+          streamingBuffer = '';
+        }
         // 优先使用 event.content（完整内容），如果没有则使用流式内容
         const finalContent = event.content || streamingContent() || '';
         // 将思考步骤转换为 thinking/intent/reasoning
