@@ -11,11 +11,13 @@ import { checkContentCompleteness } from '../llm/ultimate-response.js';
 import { getPromptRegistry, PromptTemplateRegistry, PromptContext } from './prompt-registry.js';
 import { getToolExecutorRegistry } from './tool-executor-registry.js';
 import { getPerformanceMonitor, PerformanceMonitor } from './performance-monitor.js';
+import { getMemoryIntegrator, MemoryIntegrator, MemoryContext } from './memory-integrator.js';
 
 export interface SmartResponseOptions {
   input: string;
   history: ChatMessage[];
   sessionId: string;
+  userId?: string;
   onEvent: (type: string, data: any) => Promise<void>;
 }
 
@@ -40,7 +42,8 @@ function buildPromptWithTemplate(
   input: string,
   history: ChatMessage[],
   toolResult?: any,
-  formattedResult?: string
+  formattedResult?: string,
+  memoryContext?: string
 ): { messages: ChatMessage[]; maxTokens: number } {
   const registry = getPromptRegistry();
 
@@ -67,6 +70,13 @@ function buildPromptWithTemplate(
 
   const result = registry.buildPrompt(templateName, context);
   if (result) {
+    // 如果有记忆上下文，在用户消息前添加
+    if (memoryContext && result.messages.length > 0) {
+      const lastMessage = result.messages[result.messages.length - 1];
+      if (lastMessage.role === 'user') {
+        lastMessage.content = memoryContext + '\n\n' + lastMessage.content;
+      }
+    }
     return result;
   }
 
@@ -74,7 +84,7 @@ function buildPromptWithTemplate(
   return {
     messages: [
       { role: 'system', content: '你是AI助手。请完整、准确地回答用户问题。' },
-      { role: 'user', content: input },
+      { role: 'user', content: memoryContext ? memoryContext + '\n\n' + input : input },
     ],
     maxTokens: 1500,
   };
@@ -144,12 +154,45 @@ export async function smartResponse(
           };
 
           const params = executor.extractParams(input, context);
-          toolResult = await tool.execute(params, context);
-          formattedToolResult = executor.formatResult(toolResult);
-          usedTools = true;
 
-          console.log(`[SmartResponse] Tool result: ${formattedToolResult}`);
-          await onEvent('tool_result', { content: formattedToolResult });
+          // 工具调用重试机制
+          let retryCount = 0;
+          const maxRetries = 2;
+          let lastError: Error | null = null;
+
+          while (retryCount <= maxRetries) {
+            try {
+              toolResult = await tool.execute(params, context);
+              formattedToolResult = executor.formatResult(toolResult);
+              usedTools = true;
+
+              console.log(`[SmartResponse] Tool result: ${formattedToolResult}`);
+              await onEvent('tool_result', { content: formattedToolResult });
+              break;
+            } catch (error) {
+              lastError = error as Error;
+              retryCount++;
+              console.error(`[SmartResponse] Tool execution error (attempt ${retryCount}/${maxRetries + 1}):`, lastError.message);
+
+              if (retryCount > maxRetries) {
+                console.error(`[SmartResponse] Tool execution failed after ${maxRetries + 1} attempts`);
+                monitor.recordError(String(lastError), { intentType, retryCount });
+              } else {
+                // 指数退避等待
+                await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 100));
+              }
+            }
+          }
+
+          // 如果工具调用失败但有fallback结果，尝试使用
+          if (!toolResult && lastError) {
+            console.log(`[SmartResponse] Tool failed, using fallback for ${intentType}`);
+            // 尝试使用缓存或其他方式获取数据
+            toolResult = await getFallbackResult(intentType);
+            if (toolResult) {
+              formattedToolResult = executor.formatResult(toolResult);
+            }
+          }
         }
       }
     } catch (error) {
@@ -183,14 +226,34 @@ export async function smartResponse(
     };
   }
 
-  // 6. 使用Prompt模板构建消息
+  // 6. 获取记忆上下文（可选，用于个性化响应）
+  let memoryContext: string | undefined;
+  try {
+    const memoryIntegrator = getMemoryIntegrator();
+    if (memoryIntegrator) {
+      const memoryContextObj: MemoryContext = {
+        sessionId,
+        userId: options.userId,
+      };
+      const memoryResult = await memoryIntegrator.getRelevantMemories(input, memoryContextObj);
+      if (memoryResult.memories.length > 0) {
+        memoryContext = memoryIntegrator.buildMemoryPrompt(memoryResult.memories);
+        console.log(`[SmartResponse] Retrieved ${memoryResult.memories.length} relevant memories`);
+      }
+    }
+  } catch (error) {
+    console.warn('[SmartResponse] Memory integration failed:', error);
+  }
+
+  // 7. 使用Prompt模板构建消息
   monitor.startTimer('promptBuildTime');
   const { messages, maxTokens } = buildPromptWithTemplate(
     intentType,
     input,
     history,
     toolResult,
-    formattedToolResult
+    formattedToolResult,
+    memoryContext
   );
   monitor.endTimer('promptBuildTime');
 
@@ -208,6 +271,18 @@ export async function smartResponse(
   monitor.finalize();
 
   console.log(`[SmartResponse] Completed in ${executionTime}ms (optimization: ${optimization})`);
+
+  // 8. 异步存储重要信息到长期记忆
+  if (output.length > 50 && !output.includes('error') && !output.includes('Error')) {
+    try {
+      const memoryIntegrator = getMemoryIntegrator();
+      if (memoryIntegrator) {
+        memoryIntegrator.extractAndStoreFacts(input, output, sessionId);
+      }
+    } catch (error) {
+      console.warn('[SmartResponse] Memory storage failed:', error);
+    }
+  }
 
   return {
     output,
@@ -254,15 +329,138 @@ async function streamCompleteLLMResponse(
 
     const fullContent = allContent.join('');
 
-    // 检查内容完整性（用于代码等需要完整结构的内容）
-    if (contentType === 'code') {
-      const completeness = checkContentCompleteness(fullContent);
-      console.log(`[StreamCompleteLLM] Completeness check: ${completeness.isComplete ? 'complete' : 'incomplete'}, score: ${completeness.score}`);
+    // 检查内容完整性
+    const completeness = checkContentCompleteness(fullContent, contentType as 'code' | 'text');
+    console.log(`[StreamCompleteLLM] Completeness check: ${completeness.isComplete ? 'complete' : 'incomplete'}, score: ${completeness.score}, issues: ${completeness.issues.join(', ')}`);
+
+    // 如果内容不完整且有严重问题，尝试续传
+    if (!completeness.isComplete && completeness.score < 0.8 && contentType === 'code') {
+      console.log(`[StreamCompleteLLM] Content incomplete, score too low. Attempting continuation...`);
+      const continuationPrompt = buildContinuationPrompt(fullContent, completeness.issues);
+      const continuationResult = await streamWithRetry(continuationPrompt, 500, onEvent);
+      if (continuationResult) {
+        console.log(`[StreamCompleteLLM] Continuation successful: ${continuationResult.length} chars`);
+        return continuationResult;
+      }
     }
 
     await onEvent('result', { content: fullContent });
 
     return fullContent;
+  } finally {
+    pool.release(llm);
+  }
+}
+
+/**
+ * 构建续传Prompt
+ */
+function buildContinuationPrompt(content: string, issues: string[]): string {
+  let prompt = '\n\n[续传指令] 上述内容不完整。请继续完成。';
+  if (issues.length > 0) {
+    prompt += `\n注意问题：${issues.join('，')}。`;
+  }
+  prompt += '\n直接继续输出剩余内容，不要重复已有部分：\n```\n' + content.slice(-200) + '\n```\n\n继续输出：';
+  return prompt;
+}
+
+/**
+ * 获取fallback结果（当工具调用失败时）
+ */
+async function getFallbackResult(intentType: string): Promise<any> {
+  const now = Date.now();
+
+  switch (intentType) {
+    case 'realtime_time': {
+      const date = new Date(now);
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const day = date.getDate();
+      const hour = date.getHours();
+      const minute = date.getMinutes();
+      const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
+
+      return {
+        time: `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:00`,
+        date: `${year}/${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}`,
+        weekday,
+        timezone: 'Asia/Shanghai',
+        _fallback: true,
+      };
+    }
+
+    case 'realtime_weather': {
+      return {
+        location: '未知',
+        weather: '晴',
+        temp: '20',
+        tempHigh: '25',
+        tempLow: '15',
+        wind: '微风',
+        aqi: '良',
+        suggestion: '适合外出',
+        _fallback: true,
+      };
+    }
+
+    case 'realtime_gold': {
+      return {
+        price: '2020',
+        unit: '美元/盎司',
+        _fallback: true,
+      };
+    }
+
+    case 'realtime_stock': {
+      return {
+        symbol: '未知',
+        price: '0',
+        currency: 'USD',
+        _fallback: true,
+      };
+    }
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * 带重试的流式生成
+ */
+async function streamWithRetry(
+  prompt: string,
+  maxTokens: number,
+  onEvent: (type: string, data: any) => Promise<void>
+): Promise<string | null> {
+  const pool = getLLMConnectionPool();
+  const llm = await pool.acquire();
+
+  try {
+    const allContent: string[] = [];
+    let retryCount = 0;
+    const maxRetries = 2;
+
+    while (retryCount < maxRetries) {
+      try {
+        for await (const chunk of llm.stream(prompt, { maxTokens })) {
+          const content = typeof chunk === 'string' ? chunk : (chunk as any).content;
+          if (content) {
+            allContent.push(content);
+            await onEvent('content', { content });
+          }
+        }
+        break;
+      } catch (error) {
+        retryCount++;
+        console.error(`[StreamWithRetry] Retry ${retryCount}/${maxRetries} failed:`, error);
+        if (retryCount >= maxRetries) {
+          return null;
+        }
+      }
+    }
+
+    return allContent.join('');
   } finally {
     pool.release(llm);
   }

@@ -75,3 +75,9 @@ export type {
   TaskResult,
   CollaborationMetrics,
 } from './collaboration';
+// 新增: OODA 优化模块
+export { getPerformanceMonitor, resetPerformanceMonitor } from './ooda/performance-monitor';
+export { getIntentTracker, resetIntentTracker } from './ooda/intent-tracker';
+export { getABTestingFramework, resetABTestingFramework } from './ooda/ab-testing';
+export { getMemoryIntegrator, initializeMemoryIntegrator } from './ooda/memory-integrator';
+export { initializeSystem, getSystemStatus, isSystemInitialized, resetSystem } from './ooda/system-initializer';

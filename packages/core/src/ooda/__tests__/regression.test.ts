@@ -8,6 +8,13 @@ import { Orienter } from '../orient';
 import { Decider } from '../decide';
 import { Actor } from '../act';
 import { AgentState } from '../../types';
+import { initializeDataSourceManager } from '../data-source';
+
+class MockDatabaseManager {
+  run(sql: string, params: any[]): { changes: number } { return { changes: 1 }; }
+  get(sql: string, params: any[]): any { return null; }
+  all(sql: string, params: any[]): any[] { return []; }
+}
 
 vi.mock('../../memory', () => ({
   getSessionMemory: vi.fn(() => ({
@@ -26,6 +33,7 @@ vi.mock('../../memory', () => ({
 describe('OODA 回归测试', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    initializeDataSourceManager(new MockDatabaseManager() as any);
   });
 
   describe('1. 原有 Observer 类仍然可用', () => {

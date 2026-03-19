@@ -2,6 +2,8 @@
 // 知识缺口检测模块 - 检测用户问题是否需要外部信息
 
 import { Observation, Intent } from '../types';
+import { getLLMService } from '../llm/service';
+import { ChatMessage } from '../llm/provider';
 
 /**
  * 知识缺口类型枚举
@@ -81,6 +83,20 @@ export interface KnowledgeGapDetectorConfig {
 }
 
 /**
+ * LLM 增强配置
+ */
+export interface LLMEnhancementConfig {
+  /** 是否启用 LLM 分析 */
+  enableLLMAnalysis: boolean;
+  /** LLM 置信度阈值 */
+  confidenceThreshold: number;
+  /** 最大缺口数 */
+  maxGaps: number;
+  /** 使用多源验证 */
+  useMultiSourceValidation: boolean;
+}
+
+/**
  * 默认配置
  */
 const DEFAULT_CONFIG: KnowledgeGapDetectorConfig = {
@@ -118,70 +134,218 @@ const DEFAULT_CONFIG: KnowledgeGapDetectorConfig = {
  * 用于分析用户输入，检测是否需要外部工具来满足信息需求
  */
 export class KnowledgeGapDetector {
-   private config: KnowledgeGapDetectorConfig;
+  private config: KnowledgeGapDetectorConfig;
+  private llmConfig: LLMEnhancementConfig;
 
-   // 领域特定查询模式库 - 高置信度、纯数据类型输出
-   // 不再硬编码 site 参数，由动态路由器根据数据类型选择数据源
-   private queryPatterns: Array<{
-     pattern: RegExp;
-     type: KnowledgeGapType;
-     baseConfidence: number;
-     dataType: string;  // 数据类型，用于动态工具选择
-   }> = [
-     // 金价相关模式 - 高置信度
-     {
-       pattern: /今日.*金价|金价.*今日|实时.*金价|黄金.*实时价/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.9,
-       dataType: 'gold_price'  // 移除硬编码的 site 参数
-     },
-     // 汇率相关模式
-     {
-       pattern: /人民币.*对.*美元|美元.*对.*人民币|汇率.*实时|实时.*汇率/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.88,
-       dataType: 'forex'
-     },
-     // 加密货币模式
-     {
-       pattern: /比特币|以太坊|加密货币.*价格|币价.*实时/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.85,
-       dataType: 'crypto'
-     },
-     // 大盘指数模式
-     {
-       pattern: /道琼斯|纳斯达克|标普500|富时|日经.*指数|大盘.*点数/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.82,
-       dataType: 'stock'
-     },
-     // 白银价格
-     {
-       pattern: /今日.*银价|银价.*今日|实时.*白银|白银.*实时价/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.9,
-       dataType: 'silver_price'
-     },
-     // 油价
-     {
-       pattern: /今日.*油价|油价.*今日|实时.*原油|WTI|Brent/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.85,
-       dataType: 'oil_price'
-     },
-     // 天气
-     {
-       pattern: /天气|气温|温度|下雨|晴天/i,
-       type: KnowledgeGapType.REALTIME_INFO,
-       baseConfidence: 0.8,
+  // 领域特定查询模式库 - 高置信度、纯数据类型输出
+  // 不再硬编码 site 参数，由动态路由器根据数据类型选择数据源
+  private queryPatterns: Array<{
+    pattern: RegExp;
+    type: KnowledgeGapType;
+    baseConfidence: number;
+    dataType: string;  // 数据类型，用于动态工具选择
+  }> = [
+    // 金价相关模式 - 高置信度
+    {
+      pattern: /今日.*金价|金价.*今日|实时.*金价|黄金.*实时价/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.9,
+      dataType: 'gold_price'  // 移除硬编码的 site 参数
+    },
+    // 汇率相关模式
+    {
+      pattern: /人民币.*对.*美元|美元.*对.*人民币|汇率.*实时|实时.*汇率/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.88,
+      dataType: 'forex'
+    },
+    // 加密货币模式
+    {
+      pattern: /比特币|以太坊|加密货币.*价格|币价.*实时/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.85,
+      dataType: 'crypto'
+    },
+    // 大盘指数模式
+    {
+      pattern: /道琼斯|纳斯达克|标普500|富时|日经.*指数|大盘.*点数/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.82,
+      dataType: 'stock'
+    },
+    // 白银价格
+    {
+      pattern: /今日.*银价|银价.*今日|实时.*白银|白银.*实时价/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.9,
+      dataType: 'silver_price'
+    },
+    // 油价
+    {
+      pattern: /今日.*油价|油价.*今日|实时.*原油|WTI|Brent/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.85,
+      dataType: 'oil_price'
+    },
+    // 天气
+    {
+      pattern: /天气|气温|温度|下雨|晴天/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.8,
       dataType: 'weather'
-     },
-   ];
+    },
+  ];
 
-   constructor(config: Partial<KnowledgeGapDetectorConfig> = {}) {
-     this.config = { ...DEFAULT_CONFIG, ...config };
-   }
+  constructor(config: Partial<KnowledgeGapDetectorConfig> = {}, llmConfig: Partial<LLMEnhancementConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.llmConfig = {
+      enableLLMAnalysis: llmConfig.enableLLMAnalysis ?? true,
+      confidenceThreshold: llmConfig.confidenceThreshold ?? 0.6,
+      maxGaps: llmConfig.maxGaps ?? 3,
+      useMultiSourceValidation: llmConfig.useMultiSourceValidation ?? true,
+    };
+  }
+
+  /**
+   * 使用 LLM 进行深度分析检测（增强版）
+   */
+  async detectWithLLM(userInput: string, observation: Observation): Promise<DetectedKnowledgeGap[]> {
+    if (!this.llmConfig.enableLLMAnalysis) {
+      return this.detect(userInput, observation);
+    }
+
+    try {
+      const llm = getLLMService();
+      const context = this.buildContext(observation);
+      const prompt = this.buildLLMPrompt(userInput, context);
+      const response = await llm.chat(prompt);
+      const content = response.text || '';
+      return this.parseLLMResponse(content);
+    } catch (error) {
+      console.error('[KnowledgeGapDetector] LLM analysis failed:', error);
+      return this.detect(userInput, observation);
+    }
+  }
+
+  private buildContext(observation: Observation): string {
+    const parts: string[] = [];
+
+    if (observation.toolResults && observation.toolResults.length > 0) {
+      parts.push(`最近工具结果: ${observation.toolResults.length} 个`);
+      for (const result of observation.toolResults.slice(0, 3)) {
+        parts.push(`- ${result.toolName}: ${result.isError ? '失败' : '成功'}`);
+      }
+    }
+
+    if (observation.anomalies && observation.anomalies.length > 0) {
+      parts.push(`检测到异常: ${observation.anomalies.length} 个`);
+    }
+
+    if (observation.patterns && observation.patterns.length > 0) {
+      parts.push(`识别模式: ${observation.patterns.length} 个`);
+    }
+
+    return parts.join('\n') || '无额外上下文';
+  }
+
+  private buildLLMPrompt(userInput: string, context: string): ChatMessage[] {
+    return [
+      {
+        role: 'system',
+        content: `你是一个专业的知识缺口分析助手。你的职责是分析用户输入，判断是否需要外部信息来回答用户问题。
+
+## 知识缺口类型
+1. realtime_info - 需要实时数据（天气、时间、股价、金价、汇率等）
+2. web_search - 需要网络搜索获取信息
+3. news_summary - 需要新闻摘要（区分新闻内容 vs 新闻网站）
+4. file_content - 需要读取文件内容
+5. command_exec - 需要执行系统命令
+6. code_analysis - 需要分析代码
+7. clarification - 需要用户澄清
+8. none - 无缺口，可以直接回答
+
+## 分析要求
+1. 仔细分析用户输入的语义
+2. 考虑上下文中的工具执行结果
+3. 判断用户是否需要具体的实时数据
+4. 区分"新闻内容"和"新闻网站链接"
+5. 如果需要新闻内容，需要确保返回实际新闻摘要
+
+## 输出格式（JSON数组）
+[
+  {
+    "type": "缺口类型",
+    "description": "简短描述",
+    "confidence": 0.85,
+    "dataType": "数据类型",
+    "triggerKeywords": ["关键词1", "关键词2"]
+  }
+]
+
+如果没有缺口，返回空数组 []。`,
+      },
+      {
+        role: 'user',
+        content: `用户输入: ${userInput}
+
+上下文信息:
+${context}
+
+请分析并输出知识缺口（JSON数组）：`,
+      },
+    ];
+  }
+
+  private parseLLMResponse(content: string): DetectedKnowledgeGap[] {
+    try {
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        return [];
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return [];
+      }
+
+      return parsed.slice(0, this.llmConfig.maxGaps).map((item: any) => ({
+        type: this.normalizeGapType(item.type),
+        description: item.description || '',
+        confidence: Math.min(1, Math.max(0, item.confidence || 0.5)),
+        dataType: item.dataType,
+        suggestedTool: item.suggestedTool,
+        suggestedArgs: item.suggestedArgs,
+        triggerKeywords: item.triggerKeywords || [],
+      }));
+    } catch (error) {
+      console.error('[KnowledgeGapDetector] Parse LLM response failed:', error);
+      return [];
+    }
+  }
+
+  private normalizeGapType(type: string): KnowledgeGapType {
+    const typeMap: Record<string, KnowledgeGapType> = {
+      realtime_info: KnowledgeGapType.REALTIME_INFO,
+      realtime: KnowledgeGapType.REALTIME_INFO,
+      realtimeinfo: KnowledgeGapType.REALTIME_INFO,
+      web_search: KnowledgeGapType.WEB_SEARCH,
+      websearch: KnowledgeGapType.WEB_SEARCH,
+      search: KnowledgeGapType.WEB_SEARCH,
+      news_summary: KnowledgeGapType.NEWS_SUMMARY,
+      news: KnowledgeGapType.NEWS_SUMMARY,
+      file_content: KnowledgeGapType.FILE_CONTENT,
+      file: KnowledgeGapType.FILE_CONTENT,
+      command_exec: KnowledgeGapType.COMMAND_EXEC,
+      command: KnowledgeGapType.COMMAND_EXEC,
+      code_analysis: KnowledgeGapType.CODE_ANALYSIS,
+      code: KnowledgeGapType.CODE_ANALYSIS,
+      clarification: KnowledgeGapType.CLARIFICATION,
+      none: KnowledgeGapType.NONE,
+    };
+
+    const normalized = type.toLowerCase().replace(/[_-]/g, '_');
+    return typeMap[normalized] || KnowledgeGapType.NONE;
+  }
 
   /**
    * 主检测方法 - 分析用户输入和观察结果，检测知识缺口

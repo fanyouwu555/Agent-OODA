@@ -4,6 +4,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OODALoop } from '../loop';
 import { OODAEvent } from '../loop';
+import { initializeDataSourceManager } from '../data-source';
+
+class MockDatabaseManager {
+  run(sql: string, params: any[]): { changes: number } { return { changes: 1 }; }
+  get(sql: string, params: any[]): any { return null; }
+  all(sql: string, params: any[]): any[] { return []; }
+}
 
 vi.mock('../../memory', () => ({
   getSessionMemory: vi.fn(() => ({
@@ -22,6 +29,7 @@ vi.mock('../../memory', () => ({
 describe('OODA 四代理架构 - 集成测试', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    initializeDataSourceManager(new MockDatabaseManager() as any);
   });
 
   describe('1. OODALoop 初始化测试', () => {
