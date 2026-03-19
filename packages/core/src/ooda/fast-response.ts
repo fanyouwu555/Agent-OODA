@@ -1,9 +1,9 @@
 // packages/core/src/ooda/fast-response.ts
 // 快速响应策略 - 先响应，后完善
 
-import { LLMService } from '../llm/service';
-import { getLLMConnectionPool } from '../llm/connection-pool';
-import { ChatMessage } from '../llm/provider';
+import { LLMService } from '../llm/service.js';
+import { getLLMConnectionPool } from '../llm/connection-pool.js';
+import { ChatMessage } from '../llm/provider.js';
 
 export interface FastResponseResult {
   /** 立即响应的内容 */
@@ -55,7 +55,54 @@ export function quickIntentRecognition(input: string): {
       needsDetailedProcessing: true,
     };
   }
-  
+
+  // 实时数据类 - 金价、股价、加密货币、天气等
+  if (/金价|黄金价格|gold price|xau/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_gold',
+      confidence: 0.95,
+      immediateResponse: '正在为您查询实时金价...',
+      needsDetailedProcessing: true,
+    };
+  }
+
+  if (/股价|股票价格|stock price|股票.*多少|AAPL|TSLA|苹果|特斯拉/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_stock',
+      confidence: 0.9,
+      immediateResponse: '正在为您查询股票实时价格...',
+      needsDetailedProcessing: true,
+    };
+  }
+
+  if (/比特币|bitcoin|btc|以太坊|ethereum|eth|加密货币|crypto/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_crypto',
+      confidence: 0.9,
+      immediateResponse: '正在为您查询加密货币实时价格...',
+      needsDetailedProcessing: true,
+    };
+  }
+
+  if (/天气|温度|weather|气温.*多少|今天.*冷|今天.*热/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_weather',
+      confidence: 0.9,
+      immediateResponse: '正在为您查询实时天气...',
+      needsDetailedProcessing: true,
+    };
+  }
+
+  // 新闻事实类 - 最新新闻、热点事件
+  if (/最新.*新闻|最近.*新闻|今天.*新闻|热点|头条|latest news|breaking news|news today/i.test(lowerInput)) {
+    return {
+      intentType: 'realtime_news',
+      confidence: 0.9,
+      immediateResponse: '正在为您获取最新新闻...',
+      needsDetailedProcessing: true,
+    };
+  }
+
   // 代码类
   if (/代码|编程|函数|class|function|代码/i.test(lowerInput)) {
     return {
@@ -67,7 +114,7 @@ export function quickIntentRecognition(input: string): {
   }
   
   // 问候类 - 不需要详细处理
-  if (/你好|您好|hello|hi|hey/i.test(lowerInput) && lowerInput.length < 20) {
+  if (/^(你好|您好|hello|hi|hey)$/i.test(lowerInput)) {
     return {
       intentType: 'greeting',
       confidence: 0.95,
@@ -75,7 +122,28 @@ export function quickIntentRecognition(input: string): {
       needsDetailedProcessing: false,
     };
   }
-  
+
+  // 确认/感谢类 - 不需要详细处理
+  if (/^(ok|okay|好的|知道了|明白|了解|行|可以)$/i.test(lowerInput) ||
+      /^(谢谢|感谢|多谢|谢了|谢谢帮助)$/i.test(lowerInput)) {
+    return {
+      intentType: 'confirmation',
+      confidence: 0.9,
+      immediateResponse: '不客气！如果还有其他问题，随时告诉我。',
+      needsDetailedProcessing: false,
+    };
+  }
+
+  // 告别类 - 不需要详细处理
+  if (/^(bye|goodbye|再见|拜拜|拜|再会)$/i.test(lowerInput)) {
+    return {
+      intentType: 'farewell',
+      confidence: 0.9,
+      immediateResponse: '再见！祝您有愉快的一天！',
+      needsDetailedProcessing: false,
+    };
+  }
+
   // 默认 - 需要详细处理
   return {
     intentType: 'general',

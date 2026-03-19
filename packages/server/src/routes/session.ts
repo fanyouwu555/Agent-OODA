@@ -104,13 +104,14 @@ sessionRoutes
   })
 
   .post('/session/:id/message', async (c) => {
+    const requestStartTime = Date.now();
     console.log(`[DEBUG] Message endpoint called`);
     const sessionId = c.req.param('id');
     console.log(`[DEBUG] Session ID: ${sessionId}`);
     detailedLogger.info('SERVER', `Received message for session`, { sessionId });
-    
+
     const store = await getStorage();
-    console.log(`[DEBUG] Storage loaded`);
+    console.log(`[DEBUG] Storage loaded in ${Date.now() - requestStartTime}ms`);
     
     const session = store.sessions.findById(sessionId);
     if (!session) {
@@ -159,8 +160,11 @@ sessionRoutes
     console.log(`[Context] Loaded ${history.length} history messages`);
     detailedLogger.info('SERVER', `Starting OODA processing`, { sessionId, historyLength: history.length });
     
+    const sseStartTime = Date.now();
+    console.log(`[DEBUG] Pre-SSE processing took ${sseStartTime - requestStartTime}ms`);
+
     return streamSSE(c, async (stream) => {
-      console.log(`[DEBUG] streamSSE started`);
+      console.log(`[DEBUG] streamSSE started, total time to SSE: ${Date.now() - requestStartTime}ms`);
       detailedLogger.logSSEConnect(sessionId);
       
       const sendEvent = async (type: string, data: Record<string, unknown>) => {

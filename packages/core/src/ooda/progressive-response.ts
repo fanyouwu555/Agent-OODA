@@ -1,10 +1,11 @@
 // packages/core/src/ooda/progressive-response.ts
 // 渐进式响应机制 - 先响应，后完善
 
-import { quickIntentRecognition } from './fast-response';
-import { getLLMConnectionPool } from '../llm/connection-pool';
-import { ChatMessage } from '../llm/provider';
-import { getToolRegistry } from '../tool/registry';
+import { quickIntentRecognition } from './fast-response.js';
+import { getLLMConnectionPool } from '../llm/connection-pool.js';
+import { ChatMessage } from '../llm/provider.js';
+import { getToolRegistry } from '../tool/registry.js';
+import { getLightweightResponse } from './lightweight-responses.js';
 
 export interface ProgressiveResponseOptions {
   /** 用户输入 */
@@ -40,31 +41,71 @@ export async function progressiveResponse(
 ): Promise<ProgressiveResponseResult> {
   const startTime = Date.now();
   const { input, history, sessionId, onEvent } = options;
-  
+
+  console.log(`[ProgressiveResponse] Starting for input: "${input.substring(0, 30)}..."`);
+
   // 1. 快速意图识别（< 10ms）
+  const intentStart = Date.now();
   const quickIntent = quickIntentRecognition(input);
-  
-  // 2. 立即发送初步响应
+  console.log(`[ProgressiveResponse] Intent recognition took ${Date.now() - intentStart}ms, type: ${quickIntent.intentType}, needsDetailedProcessing: ${quickIntent.needsDetailedProcessing}`);
+
+  // 2. 检查是否可以使用轻量级响应（无需LLM）
+  // 优先使用意图识别结果（更快）
+  if (!quickIntent.needsDetailedProcessing) {
+    console.log(`[ProgressiveResponse] 快速意图响应: ${quickIntent.intentType}`);
+    const eventStart = Date.now();
+    await onEvent('thinking', { content: quickIntent.immediateResponse });
+    await onEvent('content', { content: quickIntent.immediateResponse });
+    await onEvent('result', { content: quickIntent.immediateResponse });
+    console.log(`[ProgressiveResponse] Events sent in ${Date.now() - eventStart}ms`);
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[ProgressiveResponse] Completed in ${totalTime}ms (fast path)`);
+
+    return {
+      output: quickIntent.immediateResponse,
+      usedTools: false,
+      executionTime: totalTime,
+    };
+  }
+
+  // 备用：检查轻量级响应系统
+  const lightweightResponse = getLightweightResponse(input);
+  if (lightweightResponse.canHandle) {
+    console.log(`[ProgressiveResponse] 使用轻量级响应: ${lightweightResponse.type}`);
+    await onEvent('thinking', { content: quickIntent.immediateResponse });
+    await onEvent('content', { content: lightweightResponse.response });
+    await onEvent('result', { content: lightweightResponse.response });
+
+    return {
+      output: lightweightResponse.response,
+      usedTools: false,
+      executionTime: Date.now() - startTime,
+    };
+  }
+
+  // 3. 立即发送初步响应
   await onEvent('thinking', { content: quickIntent.immediateResponse });
-  
-  // 3. 检查是否需要工具调用
-  const needsTool = quickIntent.intentType === 'file_read' || 
+
+  // 4. 检查是否需要工具调用
+  const needsTool = quickIntent.intentType === 'file_read' ||
                     quickIntent.intentType === 'file_write' ||
-                    quickIntent.intentType === 'search';
-  
+                    quickIntent.intentType === 'search' ||
+                    quickIntent.intentType.startsWith('realtime_');
+
   let toolResult: any = null;
   let usedTools = false;
-  
+
   if (needsTool) {
-    // 4. 并行执行工具调用
+    // 5. 并行执行工具调用
     await onEvent('thinking', { content: '正在执行相关操作...' });
-    
+
     try {
       toolResult = await executeToolByIntent(quickIntent.intentType, input, sessionId);
       usedTools = true;
-      
+
       if (toolResult) {
-        await onEvent('tool_result', { 
+        await onEvent('tool_result', {
           content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult, null, 2)
         });
       }
@@ -72,10 +113,10 @@ export async function progressiveResponse(
       await onEvent('thinking', { content: `操作失败: ${error}` });
     }
   }
-  
-  // 5. 流式生成最终响应
+
+  // 6. 流式生成最终响应
   await onEvent('thinking', { content: '正在生成回答...' });
-  
+
   const output = await streamFinalResponse(input, history, toolResult, onEvent);
   
   const executionTime = Date.now() - startTime;
@@ -142,8 +183,69 @@ async function executeToolByIntent(intentType: string, input: string, sessionId:
         }
       }
       break;
+
+    case 'realtime_gold':
+      const goldPriceTool = toolRegistry.get('get_gold_price');
+      if (goldPriceTool) {
+        return await goldPriceTool.execute({}, context);
+      }
+      break;
+
+    case 'realtime_stock':
+      // 提取股票代码
+      const stockMatch = input.match(/([A-Z]{1,5})/) ||
+                        input.match(/(\d{6})/) ||
+                        input.match(/苹果|AAPL/i) && ['AAPL'] ||
+                        input.match(/特斯拉|TSLA/i) && ['TSLA'];
+      if (stockMatch) {
+        const symbol = stockMatch[1] || stockMatch[0];
+        const stockTool = toolRegistry.get('get_stock_price');
+        if (stockTool) {
+          return await stockTool.execute({ symbol }, context);
+        }
+      }
+      break;
+
+    case 'realtime_crypto':
+      // 提取加密货币符号
+      let cryptoSymbol = 'bitcoin';
+      if (/比特币|btc/i.test(input)) cryptoSymbol = 'bitcoin';
+      else if (/以太坊|eth/i.test(input)) cryptoSymbol = 'ethereum';
+      else if (/solana|sol/i.test(input)) cryptoSymbol = 'solana';
+
+      const cryptoTool = toolRegistry.get('get_crypto_price');
+      if (cryptoTool) {
+        return await cryptoTool.execute({ symbol: cryptoSymbol }, context);
+      }
+      break;
+
+    case 'realtime_weather':
+      // 提取城市名
+      const cities = ['北京', '上海', '广州', '深圳', '杭州', '南京', '成都', '武汉', '西安', '重庆', '天津', '苏州', '长沙', '郑州', '沈阳', '青岛', '宁波', '东莞', '无锡', '佛山'];
+      const city = cities.find(c => input.includes(c)) || '北京';
+
+      const weatherTool = toolRegistry.get('get_weather');
+      if (weatherTool) {
+        return await weatherTool.execute({ location: city }, context);
+      }
+      break;
+
+    case 'realtime_news':
+      // 提取新闻分类
+      let newsCategory = 'general';
+      if (/科技|tech/i.test(input)) newsCategory = 'tech';
+      else if (/财经|金融|finance|股市|股票/i.test(input)) newsCategory = 'finance';
+      else if (/体育|sports/i.test(input)) newsCategory = 'sports';
+      else if (/娱乐|明星|entertainment/i.test(input)) newsCategory = 'entertainment';
+      else if (/国际|全球|international|world/i.test(input)) newsCategory = 'international';
+
+      const newsTool = toolRegistry.get('get_latest_news');
+      if (newsTool) {
+        return await newsTool.execute({ category: newsCategory }, context);
+      }
+      break;
   }
-  
+
   return null;
 }
 

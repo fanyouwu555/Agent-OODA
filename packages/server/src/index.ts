@@ -116,19 +116,31 @@ async function loadConfig() {
 }
 
 async function main() {
-  // 启动时自检
-  console.log('🔍 运行启动自检...');
-  const diagnostics = getDiagnosticsEngine();
-  const diagnosticReport = await diagnostics.runDiagnostics({ autoFix: true });
+  // 先加载配置（诊断需要正确的配置）
+  const appConfig = await loadConfig();
+  if (appConfig) {
+    initializeConfigManager(appConfig);
+    const activeModel = getConfigManager().getActiveModelInfo();
+    logger.info('Config', `Active model: ${activeModel.provider}/${activeModel.model}`);
+  }
 
-  if (diagnosticReport.overallStatus === 'critical') {
-    console.error('❌ 启动自检失败，服务器无法启动');
-    console.error('💡 建议: 请检查配置和环境变量');
-    process.exit(1);
-  } else if (diagnosticReport.overallStatus === 'degraded') {
-    console.warn('⚠️  启动自检发现问题，但服务器将继续启动');
+  // 启动时自检（可通过环境变量跳过）
+  if (process.env.SKIP_DIAGNOSTICS !== 'true') {
+    console.log('🔍 运行启动自检...');
+    const diagnostics = getDiagnosticsEngine();
+    const diagnosticReport = await diagnostics.runDiagnostics({ autoFix: true });
+
+    if (diagnosticReport.overallStatus === 'critical') {
+      console.error('❌ 启动自检失败，服务器无法启动');
+      console.error('💡 建议: 请检查配置和环境变量');
+      process.exit(1);
+    } else if (diagnosticReport.overallStatus === 'degraded') {
+      console.warn('⚠️  启动自检发现问题，但服务器将继续启动');
+    } else {
+      console.log('✅ 启动自检通过');
+    }
   } else {
-    console.log('✅ 启动自检通过');
+    console.log('⏭️  跳过启动自检（SKIP_DIAGNOSTICS=true）');
   }
 
   // 校验环境变量
@@ -137,13 +149,6 @@ async function main() {
   if (!validation.valid) {
     console.error('[Config] 环境变量校验失败，服务器无法启动');
     process.exit(1);
-  }
-
-  const appConfig = await loadConfig();
-  if (appConfig) {
-    initializeConfigManager(appConfig);
-    const activeModel = getConfigManager().getActiveModelInfo();
-    logger.info('Config', `Active model: ${activeModel.provider}/${activeModel.model}`);
   }
   
   initializeSkills();

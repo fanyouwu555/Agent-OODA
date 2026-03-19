@@ -46,79 +46,8 @@ export const calculatorTool: Tool<{ expression: string }, { result: number; expr
   }
 };
 
-export const weatherTool: Tool<{ city: string }, { 
-  city: string; 
-  temperature: string; 
-  condition: string; 
-  humidity: string;
-  wind: string;
-  forecast: string;
-}> = {
-  name: 'weather',
-  description: '查询城市天气信息',
-  schema: z.object({
-    city: z.string().describe('城市名称，如 "北京", "上海", "New York"'),
-  }),
-  permissions: [{ type: 'network', pattern: '**' }],
-  
-  async execute(input) {
-    const { city } = input;
-    
-    try {
-      const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'curl/7.68.0',
-          'Accept': 'application/json',
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`天气查询失败: ${response.status}`);
-      }
-      
-      const data = await response.json() as {
-        current_condition?: Array<{
-          temp_C?: string;
-          weatherDesc?: Array<{ value?: string }>;
-          humidity?: string;
-          windspeedKmph?: string;
-          winddir16Point?: string;
-        }>;
-        weather?: Array<{
-          avgtempC?: string;
-          hourly?: Array<{ time?: string; tempC?: string; weatherDesc?: Array<{ value?: string }> }>;
-        }>;
-      };
-      
-      const current = data.current_condition?.[0];
-      const forecast = data.weather?.slice(0, 3);
-      
-      if (!current) {
-        throw new Error('无法获取天气数据');
-      }
-      
-      let forecastStr = '';
-      if (forecast && forecast.length > 0) {
-        forecastStr = forecast.map((day, i) => {
-          const avgTemp = day.avgtempC || '?';
-          return `第${i + 1}天: ${avgTemp}°C`;
-        }).join(', ');
-      }
-      
-      return {
-        city,
-        temperature: `${current.temp_C || '?'}°C`,
-        condition: current.weatherDesc?.[0]?.value || '未知',
-        humidity: `${current.humidity || '?'}%`,
-        wind: `${current.windspeedKmph || '?'} km/h ${current.winddir16Point || ''}`,
-        forecast: forecastStr,
-      };
-    } catch (error) {
-      throw new Error(`天气查询失败: ${(error as Error).message}`);
-    }
-  }
-};
+// 注意: weather 工具已移动到 realtime-data-tools.ts
+// 请使用 get_weather 工具查询天气
 
 export const translateTool: Tool<{ text: string; from?: string; to?: string }, { 
   original: string; 

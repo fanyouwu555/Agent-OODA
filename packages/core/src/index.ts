@@ -13,8 +13,6 @@ export { quickIntentRecognition, streamFastResponse } from './ooda/fast-response
 export type { FastResponseResult } from './ooda/fast-response';
 export { progressiveResponse } from './ooda/progressive-response';
 export type { ProgressiveResponseOptions, ProgressiveResponseResult } from './ooda/progressive-response';
-// 自测模块
-export { runAllTests, testConfig, testLLMProvider, testProgressiveResponse } from './ooda/self-test';
 // 自测自修自检系统
 export * from './diagnostics';
 // 新增: OODA 数据源和错误处理模块

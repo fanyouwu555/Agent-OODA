@@ -1,8 +1,8 @@
 // packages/core/src/llm/connection-pool.ts
 // LLM连接池 - 复用连接，避免重复创建
 
-import { LLMService } from './service';
-import { LLMProviderConfig } from './provider';
+import { LLMService } from './service.js';
+import { LLMProviderConfig } from './provider.js';
 
 interface PooledConnection {
   service: LLMService;

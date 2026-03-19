@@ -222,10 +222,23 @@ export const DEFAULT_CONFIG: OODAAgentConfig = {
 
 export class ConfigManager {
   private config: OODAAgentConfig;
-  
+
   constructor(config: OODAAgentConfig = DEFAULT_CONFIG) {
     // 深度合并配置
     this.config = resolveConfigEnvVars(this.deepMerge(DEFAULT_CONFIG, config)) as OODAAgentConfig;
+
+    // 如果用户没有指定 activeProvider，根据环境变量动态选择
+    if (!config.activeProvider) {
+      if (process.env.LONGCAT_API_KEY) {
+        this.config.activeProvider = 'longcat';
+        this.config.activeModel = config.activeModel || 'LongCat-Flash-Lite';
+        console.log('[ConfigManager] Auto-selected provider: longcat (LONGCAT_API_KEY found)');
+      } else if (process.env.KIMI_API_KEY) {
+        this.config.activeProvider = 'kimi';
+        this.config.activeModel = config.activeModel || 'moonshot-v1-8k';
+        console.log('[ConfigManager] Auto-selected provider: kimi (KIMI_API_KEY found)');
+      }
+    }
   }
   
   private deepMerge(target: any, source: any): any {

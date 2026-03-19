@@ -34,7 +34,7 @@ app.get('/detailed', async (c) => {
 
 // 运行诊断检查
 app.post('/diagnose', async (c) => {
-  const body = await c.req.json<{ autoFix?: boolean }>().catch(() => ({}));
+  const body = await c.req.json<{ autoFix?: boolean }>().catch(() => ({ autoFix: false })) as { autoFix?: boolean };
   const engine = getDiagnosticsEngine();
 
   const report = await engine.runDiagnostics({

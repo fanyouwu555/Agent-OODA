@@ -1,6 +1,6 @@
 // 自测自修自检引擎
 
-import { DiagnosticCheck, DiagnosticReport, HealthStatus, CheckResult, FixResult } from './types';
+import { DiagnosticCheck, DiagnosticReport, DiagnosticsHealthStatus, CheckResult, FixResult } from './types';
 import { ConfigCheck } from './checks/config-check';
 import { LLMCheck } from './checks/llm-check';
 import { StorageCheck } from './checks/storage-check';
@@ -79,8 +79,8 @@ export class DiagnosticsEngine {
     return report;
   }
 
-  async getHealthStatus(): Promise<HealthStatus> {
-    const checks: HealthStatus['checks'] = [];
+  async getHealthStatus(): Promise<DiagnosticsHealthStatus> {
+    const checks: DiagnosticsHealthStatus['checks'] = [];
 
     for (const check of this.checks) {
       const startTime = Date.now();

@@ -30,7 +30,7 @@ export interface DiagnosticReport {
   recommendations: string[];
 }
 
-export interface HealthStatus {
+export interface DiagnosticsHealthStatus {
   status: 'healthy' | 'degraded' | 'critical';
   uptime: number;
   version: string;
