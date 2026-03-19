@@ -124,7 +124,12 @@ sessionRoutes
     const body = await c.req.json();
     const message = body.message;
     console.log(`[DEBUG] Message received: ${message}`);
-    detailedLogger.debug('SERVER', `User message`, { sessionId, messageLength: message?.length });
+    detailedLogger.debug('SERVER', `User message`, {
+      sessionId,
+      messageLength: message?.length,
+      messagePreview: message?.substring(0, 100),
+      actualMessage: message // 记录实际内容用于调试
+    });
     
     if (!message) {
       detailedLogger.warn('SERVER', `Empty message received`, { sessionId });
