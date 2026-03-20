@@ -1,6 +1,6 @@
 import { DatabaseManager } from './database.js';
 import { SessionRepository, MessageRepository, ToolCallRepository, MemoryRepository } from './repositories/index.js';
-import { UserRepository } from './repositories/user.js';
+import { UserRepository, AgentConfigRepository, PermissionConfigRepository } from './repositories/index.js';
 export type {
   SessionRecord,
   MessageRecord,
@@ -15,7 +15,15 @@ export type {
   IUserRepository,
 } from './types.js';
 
-export { SessionRepository, MessageRepository, ToolCallRepository, MemoryRepository, UserRepository };
+export {
+  SessionRepository,
+  MessageRepository,
+  ToolCallRepository,
+  MemoryRepository,
+  UserRepository,
+  AgentConfigRepository,
+  PermissionConfigRepository,
+};
 
 export async function createStorage(dbPath: string) {
   const manager = new DatabaseManager(dbPath);
@@ -28,6 +36,8 @@ export async function createStorage(dbPath: string) {
     toolCalls: new ToolCallRepository(manager),
     memories: new MemoryRepository(manager),
     users: new UserRepository(manager),
+    agentConfigs: new AgentConfigRepository(manager),
+    permissionConfigs: new PermissionConfigRepository(manager),
     close: () => manager.close(),
   };
 }

@@ -85,6 +85,29 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
 CREATE INDEX IF NOT EXISTS idx_sessions_summary ON sessions(summary);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+CREATE TABLE IF NOT EXISTS agent_configs (
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  config TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_configs_name ON agent_configs(name);
+
+CREATE TABLE IF NOT EXISTS permission_configs (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT,
+  config_type TEXT NOT NULL CHECK(config_type IN ('global', 'agent', 'group')),
+  config TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agent_configs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_configs_agent ON permission_configs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_permission_configs_type ON permission_configs(config_type);
 `;
 
 export class DatabaseManager {

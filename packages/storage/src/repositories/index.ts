@@ -553,3 +553,5 @@ export class MemoryRepository {
 }
 
 export { UserRepository } from './user.js';
+export { AgentConfigRepository } from './agent-config.js';
+export { PermissionConfigRepository } from './permission-config.js';

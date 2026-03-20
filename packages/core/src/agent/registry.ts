@@ -11,12 +11,26 @@ import {
 import { ToolRegistry } from '../tool/interface';
 import { PermissionManager } from '../permission';
 
+interface AgentConfigRecord {
+  id: string;
+  name: string;
+  config: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export class AgentRegistryImpl implements AgentRegistry {
   private agents: Map<string, AgentInstance> = new Map();
   private templates: Map<string, Partial<AgentConfigV2>> = new Map();
   private defaultAgentName: string;
   private toolRegistry: ToolRegistry | null = null;
   private permissionManager: PermissionManager | null = null;
+  private storage: {
+    findAll: () => AgentConfigRecord[];
+    create: (input: { id: string; name: string; config: Record<string, unknown> }) => void;
+    update: (id: string, config: Partial<Record<string, unknown>>) => boolean;
+    delete: (id: string) => boolean;
+  } | null = null;
 
   constructor(
     config?: AgentsConfig,
@@ -48,6 +62,10 @@ export class AgentRegistryImpl implements AgentRegistry {
     this.permissionManager = manager;
   }
 
+  setStorage(storage: NonNullable<AgentRegistryImpl['storage']>): void {
+    this.storage = storage;
+  }
+
   register(config: AgentConfigV2): void {
     const resolvedConfig = this.resolveInheritance(config);
     const validatedConfig = this.applyDefaults(resolvedConfig);
@@ -60,10 +78,29 @@ export class AgentRegistryImpl implements AgentRegistry {
     };
 
     this.agents.set(config.name, instance);
+
+    if (this.storage) {
+      try {
+        this.storage.create({ id: config.name, name: config.name, config: validatedConfig as unknown as Record<string, unknown> });
+      } catch (e) {
+        console.warn(`Failed to persist agent config: ${config.name}`, e);
+      }
+    }
   }
 
   unregister(name: string): boolean {
-    return this.agents.delete(name);
+    const instance = this.agents.get(name);
+    const deleted = this.agents.delete(name);
+
+    if (deleted && this.storage && instance) {
+      try {
+        this.storage.delete(name);
+      } catch (e) {
+        console.warn(`Failed to delete agent config from storage: ${name}`, e);
+      }
+    }
+
+    return deleted;
   }
 
   get(name: string): AgentInstance | undefined {
@@ -183,6 +220,14 @@ export class AgentRegistryImpl implements AgentRegistry {
       instance.status = 'disabled';
     } else if (config.enabled === true && instance.status === 'disabled') {
       instance.status = 'idle';
+    }
+
+    if (this.storage) {
+      try {
+        this.storage.update(name, config as unknown as Record<string, unknown>);
+      } catch (e) {
+        console.warn(`Failed to update agent config in storage: ${name}`, e);
+      }
     }
   }
 
@@ -361,6 +406,30 @@ export class AgentRegistryImpl implements AgentRegistry {
     }
 
     return score;
+  }
+
+  loadFromStorage(): number {
+    if (!this.storage) return 0;
+
+    try {
+      const records = this.storage.findAll();
+      let loaded = 0;
+
+      for (const record of records) {
+        try {
+          const config = JSON.parse(record.config) as AgentConfigV2;
+          this.register(config);
+          loaded++;
+        } catch (e) {
+          console.warn(`Failed to load agent config: ${record.name}`, e);
+        }
+      }
+
+      return loaded;
+    } catch (e) {
+      console.warn('Failed to load agents from storage', e);
+      return 0;
+    }
   }
 }
 

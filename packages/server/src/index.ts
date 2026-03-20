@@ -18,7 +18,7 @@ import { requestLogger } from './middleware/logger';
 import { logger } from './utils/logger';
 import { detailedLogger } from './utils/detailed-logger';
 import { initializeSkills, initializeTools } from '@ooda-agent/tools';
-import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry, initializeDataSourceManager } from '@ooda-agent/core';
+import { getMCPService, getSkillRegistry, initializeConfigManager, getConfigManager, validateEnvironment, logValidationResult, setToolRegistry, getToolRegistry, initializeDataSourceManager, getAgentRegistry, getPermissionManager } from '@ooda-agent/core';
 import { initializeMemorySystem, initializePersonaManager } from '@ooda-agent/core';
 import { getDiagnosticsEngine } from '@ooda-agent/core';
 import { initializeOodaMetrics } from '../../core/src/metrics/ooda-metrics';
@@ -174,6 +174,34 @@ async function main() {
   // 初始化 DataSourceManager
   initializeDataSourceManager(storage.manager);
   logger.info('DataSource', 'DataSource manager initialized');
+
+  // 连接 Agent Registry 到数据库持久化
+  const agentRegistryInstance = getAgentRegistry();
+  if ('setStorage' in agentRegistryInstance) {
+    (agentRegistryInstance as any).setStorage({
+      findAll: () => storage.agentConfigs.findAll(),
+      create: (input: { id: string; name: string; config: Record<string, unknown> }) => storage.agentConfigs.create(input as any),
+      update: (id: string, config: Partial<Record<string, unknown>>) => storage.agentConfigs.update(id, config),
+      delete: (id: string) => storage.agentConfigs.delete(id),
+    });
+    const loadedCount = (agentRegistryInstance as any).loadFromStorage();
+    logger.info('Agents', `Loaded ${loadedCount} agents from database`);
+  }
+
+  // 连接 PermissionManager 到数据库持久化
+  const permManager = getPermissionManager();
+  if ('setStorage' in permManager) {
+    (permManager as any).setStorage({
+      saveGlobal: (config: Record<string, unknown>) => storage.permissionConfigs.saveGlobal(config),
+      getGlobal: () => storage.permissionConfigs.getGlobal(),
+      saveAgent: (agentId: string, config: Record<string, unknown>) => storage.permissionConfigs.saveAgent(agentId, config),
+      getAgent: (agentId: string) => storage.permissionConfigs.getAgent(agentId),
+      saveGroup: (groupName: string, config: Record<string, unknown>) => storage.permissionConfigs.saveGroup(groupName, config),
+      getGroup: (groupName: string) => storage.permissionConfigs.getGroup(groupName),
+    });
+    (permManager as any).loadFromStorage();
+    logger.info('Permissions', 'Permission config loaded from database');
+  }
   
   const personaManager = initializePersonaManager(storage.memories);
   await personaManager.loadDefaultPersona();

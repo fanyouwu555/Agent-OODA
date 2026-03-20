@@ -216,9 +216,43 @@ export class PermissionManagerImpl implements PermissionManager {
     args: unknown,
     agentName: string
   ) => Promise<boolean>;
+  private storage: {
+    saveGlobal: (config: Record<string, unknown>) => void;
+    getGlobal: () => Record<string, unknown> | null;
+    saveAgent: (agentId: string, config: Record<string, unknown>) => void;
+    getAgent: (agentId: string) => Record<string, unknown> | null;
+    saveGroup: (groupName: string, config: Record<string, unknown>) => void;
+    getGroup: (groupName: string) => Record<string, unknown> | null;
+  } | null = null;
 
   constructor(config: EnhancedPermissionConfig = DEFAULT_PERMISSION_CONFIG) {
     this.config = this.deepClone(config);
+  }
+
+  setStorage(storage: PermissionManagerImpl['storage']): void {
+    this.storage = storage;
+  }
+
+  loadFromStorage(): void {
+    if (!this.storage) return;
+
+    try {
+      const globalConfig = this.storage.getGlobal();
+      if (globalConfig) {
+        this.config.global = globalConfig as unknown as GlobalPermissionConfig;
+      }
+
+      for (const [agentId] of Object.entries(this.config.agents)) {
+        const agentConfig = this.storage.getAgent(agentId);
+        if (agentConfig) {
+          this.config.agents[agentId] = agentConfig as unknown as AgentPermissionConfig;
+        }
+      }
+
+      console.log('[PermissionManager] Loaded config from storage');
+    } catch (e) {
+      console.warn('Failed to load permission config from storage', e);
+    }
   }
 
   loadConfig(config: EnhancedPermissionConfig): void {
@@ -347,6 +381,13 @@ export class PermissionManagerImpl implements PermissionManager {
 
   updateGlobalPermission(tool: string, mode: PermissionMode): void {
     this.config.global.tools[tool] = mode;
+    if (this.storage) {
+      try {
+        this.storage.saveGlobal(this.config.global as unknown as Record<string, unknown>);
+      } catch (e) {
+        console.warn('Failed to persist global permission config', e);
+      }
+    }
   }
 
   updateAgentPermission(
@@ -363,6 +404,14 @@ export class PermissionManagerImpl implements PermissionManager {
     }
 
     this.config.agents[agent].tools![tool] = mode;
+
+    if (this.storage) {
+      try {
+        this.storage.saveAgent(agent, this.config.agents[agent] as unknown as Record<string, unknown>);
+      } catch (e) {
+        console.warn(`Failed to persist permission config for agent: ${agent}`, e);
+      }
+    }
   }
 
   setUserConfirmationCallback(
