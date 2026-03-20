@@ -11,6 +11,7 @@ import { OODACycleContext, createOODACycleContext, PhaseResult, LLMInteraction }
 import { getLLMService } from '../llm/service';
 import { ChatMessage } from '../llm/provider';
 import { LRUCache } from '../utils/cache';
+import { ValidationManager } from './validation';
 
 export { ObserveAgent } from './observe';
 
@@ -117,6 +118,7 @@ export class OODALoop {
   private streamingManager?: StreamingOutputManager;
   private thinkingCallback?: ThinkingCallback;
   private streamContentCallback?: (chunk: string, isComplete: boolean) => Promise<void>;
+  private validationManager?: ValidationManager;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -152,6 +154,8 @@ export class OODALoop {
     this.observationCache = new LRUCache<Observation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
     this.orientationCache = new LRUCache<Orientation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
     this.decisionCache = new LRUCache<Decision>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+
+    this.validationManager = new ValidationManager();
 
     if (streamingHandler) {
       this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
@@ -952,6 +956,24 @@ export class OODALoop {
   }
 
   /**
+   * 配置验证规则
+   */
+  configureValidation(config: { enabled?: boolean; rules?: import('./validation').ValidationRuleOptions[] }): void {
+    if (!this.validationManager) return;
+
+    if (config.rules) {
+      this.validationManager.addRules(config.rules);
+    }
+  }
+
+  /**
+   * 获取验证管理器
+   */
+  getValidationManager(): ValidationManager | undefined {
+    return this.validationManager;
+  }
+
+  /**
    * ========== 结果验证模块 ==========
    * 在 Act 阶段执行完成后，验证工具返回的结果是否符合用户需求
    * 如果不符合，生成改进后的响应
@@ -961,79 +983,47 @@ export class OODALoop {
     actionResult: ActionResult,
     decision: Decision
   ): Promise<ActionResult> {
-    // 只对工具调用类型的结果进行验证
     if (decision.nextAction.type !== 'tool_call' || !actionResult.success) {
       return actionResult;
     }
 
-    const toolName = decision.nextAction.toolName;
-    
-    // 只对搜索类工具进行验证
-    const searchTools = ['web_search', 'web_search_and_fetch', 'search_web', 'webSearch'];
-    if (!searchTools.includes(toolName || '')) {
+    const toolName = decision.nextAction.toolName || '';
+    const toolArgs = decision.nextAction.args || {};
+
+    if (!this.validationManager) {
       return actionResult;
     }
 
     try {
-      const llm = getLLMService();
-      
-      // 获取工具返回的结果
-      const resultData = actionResult.result as any;
-      const results = resultData?.result?.results || resultData?.results || [];
-      
-      // 提取结果内容用于验证
-      const resultSummary = results.slice(0, 3).map((r: any) => {
-        const content = r.content || r.snippet || '';
-        const title = r.title || '';
-        return `标题: ${title}\n内容: ${content.slice(0, 300)}`;
-      }).join('\n\n');
-
-      const validationPrompt = `你是一个结果验证助手。请判断以下工具返回的结果是否回答了用户的问题。
-
-## 用户原始问题
-${userInput}
-
-## 工具返回的结果（部分）
-${resultSummary || '无内容'}
-
-## 判断标准
-1. 结果是否直接回答了用户的问题？
-2. 结果是否提供了用户需要的信息？
-3. 如果是新闻类问题，结果是否包含实际新闻内容（而非仅网站链接）？
-
-## 输出格式（JSON）
-{
-  "isSatisfied": true/false,  // 结果是否满足用户需求
-  "analysis": "简短分析",      // 为什么满足或不满足
-  "improvedResponse": "如果结果不满足，生成改进后的响应"  // 可选
-}
-
-请只输出 JSON，不要有其他内容。`;
-
-      const response = await llm.generate(validationPrompt, { maxTokens: 500 });
-      const content = response.text || '';
-      
-      // 解析 JSON 响应
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        console.log('[ResultValidation] 验证结果:', parsed.isSatisfied, parsed.analysis);
-        
-        // 如果结果不满足用户需求，改进响应
-        if (!parsed.isSatisfied && parsed.improvedResponse) {
-          // 更新 feedback 中的 observations
-          actionResult.feedback.observations = [parsed.improvedResponse];
-          actionResult.feedback.suggestions.push('结果经过 LLM 验证和改进');
-        } else if (parsed.isSatisfied && parsed.analysis) {
-          // 添加分析说明
-          actionResult.feedback.observations.push(`📋 结果分析: ${parsed.analysis}`);
+      const validationResult = await this.validationManager.validate(
+        toolName,
+        actionResult.result,
+        {
+          userInput,
+          toolName,
+          toolArgs,
+          timestamp: Date.now(),
         }
+      );
+
+      console.log(`[ResultValidation] Tool: ${toolName}, Valid: ${validationResult.isValid}, Score: ${validationResult.score}`);
+
+      if (!validationResult.isValid && validationResult.issues.length > 0) {
+        actionResult.feedback.issues.push(...validationResult.issues);
+      }
+
+      if (validationResult.suggestions.length > 0) {
+        actionResult.feedback.suggestions.push(...validationResult.suggestions);
+      }
+
+      if (validationResult.improvedContent) {
+        actionResult.feedback.observations = [validationResult.improvedContent];
+        actionResult.feedback.suggestions.push('结果经过验证和改进');
       }
     } catch (error) {
       console.error('[ResultValidation] 验证失败:', error);
-      // 验证失败不影响原有结果
     }
-    
+
     return actionResult;
   }
 }
