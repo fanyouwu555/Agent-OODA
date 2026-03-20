@@ -12,6 +12,8 @@ import { getLLMService } from '../llm/service';
 import { ChatMessage } from '../llm/provider';
 import { LRUCache } from '../utils/cache';
 import { ValidationManager } from './validation';
+import { AdaptationEngine, getDefaultAdaptationStrategies } from './adaptation';
+import type { AdaptationResult } from './adaptation';
 
 export { ObserveAgent } from './observe';
 
@@ -119,6 +121,8 @@ export class OODALoop {
   private thinkingCallback?: ThinkingCallback;
   private streamContentCallback?: (chunk: string, isComplete: boolean) => Promise<void>;
   private validationManager?: ValidationManager;
+  private adaptationEngine?: AdaptationEngine;
+  private adaptationEnabled = true;
   
   private maxIterations = 10;
   private timeout = 300000;
@@ -156,6 +160,8 @@ export class OODALoop {
     this.decisionCache = new LRUCache<Decision>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
 
     this.validationManager = new ValidationManager();
+
+    this.adaptationEngine = new AdaptationEngine(getDefaultAdaptationStrategies());
 
     if (streamingHandler) {
       this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
@@ -843,18 +849,41 @@ export class OODALoop {
   }
 
   private async adaptStrategy(state: AgentState, callback: OODACallback): Promise<void> {
-    const adaptationEvent = {
-      phase: 'adaptation' as const,
-      data: {
-        adaptation: {
-          reason: 'High failure rate detected',
-          action: 'Adjusting strategy',
+    if (!this.adaptationEnabled || !this.adaptationEngine) {
+      return;
+    }
+
+    const currentMetrics = this.computeAdaptationMetrics();
+    const result = await this.adaptationEngine.analyzeAndAdapt(currentMetrics);
+
+    if (result && result.applied) {
+      console.log(`[Adaptation] Applied strategy: ${result.strategy.name}`);
+
+      this.applyStrategyConfig(result.strategy.config);
+
+      const adaptationEvent = {
+        phase: 'adaptation' as const,
+        data: {
+          adaptation: {
+            reason: `${result.strategy.name} triggered`,
+            action: 'Strategy applied',
+            strategyType: result.strategy.type,
+          }
         }
-      }
-    };
-    await callback(adaptationEvent);
-    await this.streamingManager?.handleOODAEvent(adaptationEvent);
-    this.loopContext.adaptationNotes.push(`[Iteration ${this.currentIteration}] Adapted strategy`);
+      };
+      await callback(adaptationEvent);
+      await this.streamingManager?.handleOODAEvent(adaptationEvent);
+      this.loopContext.adaptationNotes.push(`[Iteration ${this.currentIteration}] Adapted: ${result.strategy.name}`);
+    }
+  }
+
+  private applyStrategyConfig(config: import('./adaptation').AdaptationStrategyConfig): void {
+    if (config.cacheTTL || config.cacheMaxSize) {
+      this.configureCache({
+        ttl: config.cacheTTL,
+        maxSize: config.cacheMaxSize,
+      });
+    }
   }
 
   private handleTimeout(state: AgentState): AgentResult {
@@ -971,6 +1000,72 @@ export class OODALoop {
    */
   getValidationManager(): ValidationManager | undefined {
     return this.validationManager;
+  }
+
+  /**
+   * 启用/禁用自适应策略
+   */
+  enableAdaptation(enabled: boolean): void {
+    this.adaptationEnabled = enabled;
+  }
+
+  /**
+   * 配置适应策略
+   */
+  configureAdaptation(config: {
+    enabled?: boolean;
+    strategies?: import('./adaptation').AdaptationRuleOptions[];
+    cooldownPeriod?: number;
+  }): void {
+    if (!this.adaptationEngine) return;
+
+    if (config.enabled !== undefined) {
+      this.adaptationEnabled = config.enabled;
+    }
+
+    if (config.strategies) {
+      for (const strategy of config.strategies) {
+        this.adaptationEngine.registerStrategy(strategy);
+      }
+    }
+
+    if (config.cooldownPeriod !== undefined) {
+      this.adaptationEngine.setCooldownPeriod(config.cooldownPeriod);
+    }
+  }
+
+  /**
+   * 获取适应引擎
+   */
+  getAdaptationEngine(): AdaptationEngine | undefined {
+    return this.adaptationEngine;
+  }
+
+  /**
+   * 计算当前适应性能指标
+   */
+  private computeAdaptationMetrics(): import('./adaptation').PerformanceMetrics {
+    const metrics = this.performanceMetrics;
+    if (metrics.length === 0) {
+      return {
+        latency: 0,
+        errorRate: 0,
+        successRate: 1,
+        cacheHitRate: this.observationCache.getStats().hitRate,
+        retryCount: 0,
+        toolUsage: {},
+      };
+    }
+
+    const last = metrics[metrics.length - 1];
+    return {
+      latency: last.actTime,
+      errorRate: 0,
+      successRate: 1,
+      cacheHitRate: this.observationCache.getStats().hitRate,
+      retryCount: 0,
+      toolUsage: {},
+    };
   }
 
   /**
