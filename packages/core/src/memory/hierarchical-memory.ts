@@ -3,6 +3,8 @@
 
 import { Message } from '../types';
 import { getLLMService } from '../llm/service';
+import type { MemoryExpirationManager } from './memory-expiration';
+import type { CleanupResult } from './memory-expiration';
 
 /**
  * 工作记忆 - 保留最近的关键上下文
@@ -280,12 +282,42 @@ export class HierarchicalMemoryManager {
   private episodic: EpisodicMemory;
   private semantic: SemanticMemory;
   private sessionId: string;
-  
+  private expirationManager: MemoryExpirationManager | null = null;
+  private lastCleanupTime: number = 0;
+  private cleanupThreshold: number = 100; // 每 100 次操作触发一次检查
+
   constructor(sessionId: string) {
     this.sessionId = sessionId;
     this.working = new HierarchicalWorkingMemory();
     this.episodic = new EpisodicMemory();
     this.semantic = new SemanticMemory();
+  }
+
+  setExpirationManager(manager: MemoryExpirationManager): void {
+    this.expirationManager = manager;
+  }
+
+  getExpirationManager(): MemoryExpirationManager | null {
+    return this.expirationManager;
+  }
+
+  private shouldCleanup(): boolean {
+    if (!this.expirationManager) return false;
+    return this.expirationManager.getConfig().enableAutoCleanup;
+  }
+
+  private async triggerCleanupIfNeeded(): Promise<CleanupResult | null> {
+    if (!this.shouldCleanup()) return null;
+
+    const now = Date.now();
+    const interval = this.expirationManager!.getConfig().cleanupInterval;
+
+    if (now - this.lastCleanupTime >= interval) {
+      this.lastCleanupTime = now;
+      return this.expirationManager!.cleanup();
+    }
+
+    return null;
   }
   
   // ==================== Working Memory API ====================
@@ -342,7 +374,30 @@ export class HierarchicalMemoryManager {
   
   // ==================== Semantic Memory API ====================
   storeFact(fact: string, tags: string[] = []): string {
-    return this.semantic.store('fact', fact, 0.7, tags);
+    const id = this.semantic.store('fact', fact, 0.7, tags);
+    this.triggerCleanupIfNeeded();
+    return id;
+  }
+
+  storeExperience(
+    success: boolean,
+    action: string,
+    result: string,
+    tags: string[] = []
+  ): void {
+    this.episodic.addKeyEvent(`${action}: ${result}`);
+    this.episodic.completeEpisode(success ? 'success' : 'failure');
+
+    if (!success) {
+      this.semantic.store(
+        'pattern',
+        `失败模式: ${action} -> ${result}`,
+        0.6,
+        ['failure', action, ...tags]
+      );
+    }
+
+    this.triggerCleanupIfNeeded();
   }
   
   storeSkill(skill: string, tags: string[] = []): string {
@@ -409,6 +464,51 @@ export class HierarchicalMemoryManager {
     this.working.clear();
     this.episodic.clear();
     this.semantic.clear();
+  }
+
+  /**
+   * 手动触发过期清理
+   */
+  async cleanup(): Promise<CleanupResult | null> {
+    if (!this.expirationManager) {
+      return null;
+    }
+    return this.expirationManager.cleanup();
+  }
+
+  /**
+   * 获取记忆统计信息
+   */
+  getStats(): {
+    workingMemory: number;
+    episodicMemory: number;
+    semanticMemory: number;
+    expirationEnabled: boolean;
+    expirationStats: ReturnType<MemoryExpirationManager['getStats']> | null;
+  } {
+    const expStats = this.expirationManager?.getStats() || null;
+    return {
+      workingMemory: Object.keys(this.working.toJSON()).length,
+      episodicMemory: this.episodic.size(),
+      semanticMemory: this.semantic.size(),
+      expirationEnabled: this.expirationManager !== null,
+      expirationStats: expStats,
+    };
+  }
+
+  /**
+   * 更新过期配置
+   */
+  updateExpirationConfig(config: Partial<{
+    defaultTTL: number;
+    maxMemoryCount: number;
+    importanceThreshold: number;
+    cleanupInterval: number;
+    enableAutoCleanup: boolean;
+  }>): void {
+    if (this.expirationManager) {
+      this.expirationManager.updateConfig(config);
+    }
   }
   
   /**
