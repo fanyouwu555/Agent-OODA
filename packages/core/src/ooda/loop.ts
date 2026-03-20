@@ -10,6 +10,7 @@ import { StreamingOutputManager, StreamingHandler, StreamingConfig, createConsol
 import { OODACycleContext, createOODACycleContext, PhaseResult, LLMInteraction } from './types';
 import { getLLMService } from '../llm/service';
 import { ChatMessage } from '../llm/provider';
+import { LRUCache } from '../utils/cache';
 
 export { ObserveAgent } from './observe';
 
@@ -19,7 +20,6 @@ export { ObserveAgent } from './observe';
 function debugJson(label: string, data: unknown): void {
   try {
     const json = JSON.stringify(data, null, 2);
-    // 如果太长，截断显示
     if (json.length > 5000) {
       console.log(`[DEBUG ${label}]`, json.slice(0, 5000), '\n... [truncated]');
     } else {
@@ -28,14 +28,6 @@ function debugJson(label: string, data: unknown): void {
   } catch (e) {
     console.log(`[DEBUG ${label}] [Serialization failed]`, String(e));
   }
-}
-
-// 使用统一的 ThinkingCallback 类型
-
-interface CacheEntry<T> {
-  value: T;
-  timestamp: number;
-  ttl: number;
 }
 
 interface PerformanceMetrics {
@@ -130,22 +122,21 @@ export class OODALoop {
   private timeout = 300000;
   private currentIteration = 0;
   private maxHistorySize = 100;
-  
-  private observationCache = new Map<string, CacheEntry<Observation>>();
-  private orientationCache = new Map<string, CacheEntry<Orientation>>();
-  private decisionCache = new Map<string, CacheEntry<Decision>>();
-  
+
+  private observationCache: LRUCache<Observation>;
+  private orientationCache: LRUCache<Orientation>;
+  private decisionCache: LRUCache<Decision>;
+
   private cacheTTL = 60000;
   private cacheEnabled = false;
   private maxCacheSize = 100;
   private performanceMetrics: PerformanceMetrics[] = [];
-  
-  // 动态缓存配置
+
   private adaptiveCacheEnabled = true;
-  private minTTL = 30000;    // 最小 TTL 30秒
-  private maxTTL = 300000;   // 最大 TTL 5分钟
-  private targetAvgTime = 2000; // 目标平均执行时间 2秒
-  
+  private minTTL = 30000;
+  private maxTTL = 300000;
+  private targetAvgTime = 2000;
+
   constructor(sessionId?: string, streamingHandler?: StreamingHandler, streamingConfig?: Partial<StreamingConfig>, agentName?: string) {
     this.sessionId = sessionId || `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     this.agentName = agentName || 'default';
@@ -157,7 +148,11 @@ export class OODALoop {
     this.orienter = new Orienter(this.sessionId);
     this.decider = new Decider();
     this.actor = new Actor(this.sessionId, undefined, undefined, this.agentName);
-    
+
+    this.observationCache = new LRUCache<Observation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+    this.orientationCache = new LRUCache<Orientation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+    this.decisionCache = new LRUCache<Decision>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+
     if (streamingHandler) {
       this.streamingManager = new StreamingOutputManager(streamingHandler, streamingConfig, this.sessionId);
     }
@@ -776,11 +771,11 @@ export class OODALoop {
     }
     const key = this.generateCacheKey(state);
     const cached = this.observationCache.get(key);
-    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
-      return cached.value;
+    if (cached) {
+      return cached;
     }
     const observation = await this.observer.observe(state);
-    this.observationCache.set(key, { value: observation, timestamp: Date.now(), ttl: this.cacheTTL });
+    this.observationCache.set(key, observation);
     return observation;
   }
 
@@ -790,11 +785,11 @@ export class OODALoop {
     }
     const key = JSON.stringify({ observation: observation.environment });
     const cached = this.orientationCache.get(key);
-    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
-      return cached.value;
+    if (cached) {
+      return cached;
     }
     const orientation = await this.orienter.orient(observation);
-    this.orientationCache.set(key, { value: orientation, timestamp: Date.now(), ttl: this.cacheTTL });
+    this.orientationCache.set(key, orientation);
     return orientation;
   }
 
@@ -804,11 +799,11 @@ export class OODALoop {
     }
     const key = JSON.stringify({ intent: orientation.primaryIntent.type });
     const cached = this.decisionCache.get(key);
-    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
-      return cached.value;
+    if (cached) {
+      return cached;
     }
     const decision = await this.decider.decide(orientation);
-    this.decisionCache.set(key, { value: decision, timestamp: Date.now(), ttl: this.cacheTTL });
+    this.decisionCache.set(key, decision);
     return decision;
   }
 
@@ -867,15 +862,9 @@ export class OODALoop {
   }
 
   private cleanupCache(): void {
-    if (this.observationCache.size > this.maxCacheSize) {
-      this.observationCache.clear();
-    }
-    if (this.orientationCache.size > this.maxCacheSize) {
-      this.orientationCache.clear();
-    }
-    if (this.decisionCache.size > this.maxCacheSize) {
-      this.decisionCache.clear();
-    }
+    this.observationCache.cleanup();
+    this.orientationCache.cleanup();
+    this.decisionCache.cleanup();
   }
 
   getPerformanceMetrics(): PerformanceMetrics[] {
@@ -890,8 +879,12 @@ export class OODALoop {
 
   enableCache(ttl?: number, maxSize?: number): void {
     this.cacheEnabled = true;
-    if (ttl) this.cacheTTL = ttl;
-    if (maxSize) this.maxCacheSize = maxSize;
+    if (ttl) {
+      this.cacheTTL = ttl;
+    }
+    if (maxSize) {
+      this.maxCacheSize = maxSize;
+    }
   }
 
   disableCache(): void {
@@ -950,6 +943,12 @@ export class OODALoop {
     if (config.maxSize) this.maxCacheSize = config.maxSize;
     if (config.minTTL) this.minTTL = config.minTTL;
     if (config.maxTTL) this.maxTTL = config.maxTTL;
+
+    if (config.maxSize) {
+      this.observationCache = new LRUCache<Observation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+      this.orientationCache = new LRUCache<Orientation>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+      this.decisionCache = new LRUCache<Decision>({ maxSize: this.maxCacheSize, ttl: this.cacheTTL });
+    }
   }
 
   /**
