@@ -214,6 +214,7 @@ export class Orienter {
         confidence: g.confidence,
         suggestedTool: g.suggestedTool,
         suggestedArgs: g.suggestedArgs,
+        forceRefresh: g.forceRefresh,
       })),
     };
   }

@@ -42,6 +42,8 @@ export interface DetectedKnowledgeGap {
   suggestedArgs?: Record<string, unknown>;
   /** 关键词触发器 */
   triggerKeywords: string[];
+  /** 强制刷新标志 - 实时信息必须从网络获取最新数据 */
+  forceRefresh?: boolean;
 }
 
 /**
@@ -101,8 +103,8 @@ export interface LLMEnhancementConfig {
  */
 const DEFAULT_CONFIG: KnowledgeGapDetectorConfig = {
   realtimeKeywords: {
-    zh: ['现在', '今天', '明天', '昨天', '当前', '实时', '天气', '气温', '股价', '股票', '指数', '新闻', '最新', '2024', '2025', '2026', '今日', '金价', '黄金', '白银', '汇率', '利率', '油价'],
-    en: ['now', 'today', 'tomorrow', 'yesterday', 'current', 'real-time', 'weather', 'temperature', 'stock', 'price', 'news', 'latest', '2024', '2025', '2026', 'gold', 'silver', 'oil', 'forex', 'rate', 'price'],
+    zh: ['现在', '今天', '明天', '昨天', '当前', '实时', '天气', '气温', '股价', '股票', '指数', '新闻', '最新', '2024', '2025', '2026', '今日', '金价', '黄金', '白银', '汇率', '利率', '油价', '几点', '什么时间', '时间', '几点钟', '现在几点', '当前时间', '几点了几分'],
+    en: ['now', 'today', 'tomorrow', 'yesterday', 'current', 'real-time', 'weather', 'temperature', 'stock', 'price', 'news', 'latest', '2024', '2025', '2026', 'gold', 'silver', 'oil', 'forex', 'rate', 'price', 'time', 'what time', 'clock'],
   },
   searchKeywords: {
     zh: ['搜索', '查找', '查询', '如何', '怎么', '什么', '教程', '方法', '解决', '原因', '哪个', '哪些'],
@@ -144,7 +146,16 @@ export class KnowledgeGapDetector {
     type: KnowledgeGapType;
     baseConfidence: number;
     dataType: string;  // 数据类型，用于动态工具选择
+    suggestedTool?: string;  // 建议的工具名称
   }> = [
+    // 时间查询模式 - 高置信度
+    {
+      pattern: /现在几点|什么时间|现在时间|当前时间|几点几分|现在几点了|现在几点钟|现在.*点|time.*now|what.*time.*it|current.*time/i,
+      type: KnowledgeGapType.REALTIME_INFO,
+      baseConfidence: 0.95,
+      dataType: 'current_time',
+      suggestedTool: 'get_time'
+    },
     // 金价相关模式 - 高置信度
     {
       pattern: /今日.*金价|金价.*今日|实时.*金价|黄金.*实时价/i,
@@ -449,12 +460,14 @@ ${context}
         
         // 关键改动: 不再硬编码工具参数，只输出数据类型
         // 工具选择由动态路由器根据 dataType 决定
+        // 实时信息必须强制从网络获取最新数据
         return {
           type: patternObj.type,
           description: `检测到${patternObj.type}领域实时查询（模式匹配）`,
           confidence,
           dataType: patternObj.dataType,  // 输出数据类型，由动态路由器决定工具
-          triggerKeywords: this.extractKeywordsFromPattern(patternObj.pattern, input)
+          triggerKeywords: this.extractKeywordsFromPattern(patternObj.pattern, input),
+          forceRefresh: true  // 实时信息必须强制刷新
         };
       }
     }
@@ -469,16 +482,17 @@ ${context}
       
       // 尝试推断数据类型
       const inferredDataType = this.inferDataTypeFromKeywords(matchedKeywords);
-      
+
       return {
         type: KnowledgeGapType.REALTIME_INFO,
         description: `需要实时/最新信息（检测到关键词: ${matchedKeywords.join(', ')}）`,
         confidence,
         dataType: inferredDataType,  // 输出推断的数据类型
         triggerKeywords: matchedKeywords,
+        forceRefresh: true  // 实时信息必须强制刷新
       };
     }
-    
+
     return null;
   }
 
@@ -519,6 +533,10 @@ ${context}
   private inferDataTypeFromKeywords(keywords: string[]): string {
     const keywordString = keywords.join(' ').toLowerCase();
     
+    // 时间查询（优先检查）
+    if (/几点|时间|现在|几点钟|现在几点|time|what.*time/.test(keywordString)) {
+      return 'current_time';
+    }
     // 黄金/金价
     if (/金价|黄金|白银/.test(keywordString)) {
       if (/银/.test(keywordString)) return 'silver_price';
@@ -636,18 +654,21 @@ ${context}
       
       // 关键改进：使用 web_search_and_fetch 并启用内容抓取
       // 这样可以直接获取新闻实际内容，而不是网站链接
+      // 新闻必须强制从网络获取最新数据
       return {
         type: KnowledgeGapType.NEWS_SUMMARY,
         description: `需要新闻摘要（检测到关键词: ${matchedKeywords.join(', ')}）`,
         confidence,
         suggestedTool: 'web_search_and_fetch',  // 改为带抓取的搜索
-        suggestedArgs: { 
-          query: userInput, 
+        suggestedArgs: {
+          query: userInput,
           limit: 10,
           fetchContent: true,  // 启用内容抓取
           summarize: true,
+          forceRefresh: true,  // 强制刷新，获取最新新闻
         },
         triggerKeywords: matchedKeywords,
+        forceRefresh: true,  // 新闻摘要必须强制刷新
       };
     }
     

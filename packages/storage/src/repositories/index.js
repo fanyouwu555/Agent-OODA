@@ -130,7 +130,7 @@ export class SessionRepository {
     }
     findAllWithMessageCount(status) {
         let sql = `
-      SELECT 
+      SELECT
         s.*,
         COUNT(m.id) as message_count,
         MAX(m.timestamp) as last_message_at,
@@ -392,5 +392,257 @@ export class MemoryRepository {
             createdAt: row.created_at,
             lastAccessed: row.last_accessed,
         };
+    }
+}
+export class UserRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    create(input) {
+        const id = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const now = Date.now();
+        const role = input.role || 'user';
+        this.db.runImmediate('INSERT INTO users (id, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [id, input.email, input.password, role, now, now]);
+        return { id, email: input.email, password: input.password, role, createdAt: now, updatedAt: now };
+    }
+    findByEmail(email) {
+        const row = this.db.get('SELECT * FROM users WHERE email = ?', [email]);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            email: row.email,
+            password: row.password,
+            role: row.role,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    findById(id) {
+        const row = this.db.get('SELECT * FROM users WHERE id = ?', [id]);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            email: row.email,
+            password: row.password,
+            role: row.role,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    update(id, data) {
+        const fields = [];
+        const values = [];
+        if (data.email !== undefined) {
+            fields.push('email = ?');
+            values.push(data.email);
+        }
+        if (data.password !== undefined) {
+            fields.push('password = ?');
+            values.push(data.password);
+        }
+        if (data.role !== undefined) {
+            fields.push('role = ?');
+            values.push(data.role);
+        }
+        if (fields.length === 0)
+            return false;
+        fields.push('updated_at = ?');
+        values.push(Date.now());
+        this.db.run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, [...values, id]);
+        return true;
+    }
+    delete(id) {
+        this.db.run('DELETE FROM users WHERE id = ?', [id]);
+        return true;
+    }
+    count() {
+        const row = this.db.get('SELECT COUNT(*) as count FROM users');
+        return row?.count || 0;
+    }
+    findAll() {
+        const rows = this.db.all('SELECT * FROM users ORDER BY created_at DESC');
+        return rows.map(row => ({
+            id: row.id,
+            email: row.email,
+            password: row.password,
+            role: row.role,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        }));
+    }
+}
+export class AgentConfigRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    create(input) {
+        const now = Date.now();
+        const configJson = JSON.stringify(input.config);
+        this.db.runImmediate('INSERT INTO agent_configs (id, name, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [input.id, input.name, configJson, now, now]);
+        return {
+            id: input.id,
+            name: input.name,
+            config: configJson,
+            createdAt: now,
+            updatedAt: now,
+        };
+    }
+    findById(id) {
+        const row = this.db.get('SELECT * FROM agent_configs WHERE id = ?', [id]);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            name: row.name,
+            config: row.config,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    findByName(name) {
+        const row = this.db.get('SELECT * FROM agent_configs WHERE name = ?', [name]);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            name: row.name,
+            config: row.config,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    findAll() {
+        const rows = this.db.all('SELECT * FROM agent_configs ORDER BY created_at DESC');
+        return rows.map(row => ({
+            id: row.id,
+            name: row.name,
+            config: row.config,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        }));
+    }
+    update(id, config) {
+        const existing = this.findById(id);
+        if (!existing)
+            return false;
+        const updatedConfig = { ...JSON.parse(existing.config), ...config };
+        const configJson = JSON.stringify(updatedConfig);
+        this.db.run('UPDATE agent_configs SET config = ?, updated_at = ? WHERE id = ?', [configJson, Date.now(), id]);
+        return true;
+    }
+    delete(id) {
+        const result = this.db.run('DELETE FROM agent_configs WHERE id = ?', [id]);
+        return result.changes > 0;
+    }
+    exists(name) {
+        const row = this.db.get('SELECT 1 FROM agent_configs WHERE name = ?', [name]);
+        return row !== undefined;
+    }
+    count() {
+        const row = this.db.get('SELECT COUNT(*) as count FROM agent_configs');
+        return row?.count || 0;
+    }
+}
+export class PermissionConfigRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    saveGlobal(config) {
+        const id = 'global';
+        const configJson = JSON.stringify(config);
+        const now = Date.now();
+        const existing = this.db.get("SELECT id FROM permission_configs WHERE id = ?", [id]);
+        if (existing) {
+            this.db.run('UPDATE permission_configs SET config = ?, updated_at = ? WHERE id = ?', [configJson, now, id]);
+        }
+        else {
+            this.db.run('INSERT INTO permission_configs (id, config_type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [id, 'global', configJson, now, now]);
+        }
+        return true;
+    }
+    getGlobal() {
+        const row = this.db.get("SELECT config FROM permission_configs WHERE id = 'global'");
+        if (!row)
+            return null;
+        return JSON.parse(row.config);
+    }
+    saveAgent(agentId, config) {
+        const id = `agent_${agentId}`;
+        const configJson = JSON.stringify(config);
+        const now = Date.now();
+        const existing = this.db.get('SELECT id FROM permission_configs WHERE agent_id = ?', [agentId]);
+        if (existing) {
+            this.db.run('UPDATE permission_configs SET config = ?, updated_at = ? WHERE agent_id = ?', [configJson, now, agentId]);
+        }
+        else {
+            this.db.run('INSERT INTO permission_configs (id, agent_id, config_type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [id, agentId, 'agent', configJson, now, now]);
+        }
+        return true;
+    }
+    getAgent(agentId) {
+        const row = this.db.get('SELECT config FROM permission_configs WHERE agent_id = ? AND config_type = ?', [agentId, 'agent']);
+        if (!row)
+            return null;
+        return JSON.parse(row.config);
+    }
+    saveGroup(groupName, config) {
+        const id = `group_${groupName}`;
+        const configJson = JSON.stringify(config);
+        const now = Date.now();
+        const existing = this.db.get('SELECT id FROM permission_configs WHERE id = ?', [id]);
+        if (existing) {
+            this.db.run('UPDATE permission_configs SET config = ?, updated_at = ? WHERE id = ?', [configJson, now, id]);
+        }
+        else {
+            this.db.run('INSERT INTO permission_configs (id, config_type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [id, 'group', configJson, now, now]);
+        }
+        return true;
+    }
+    getGroup(groupName) {
+        const row = this.db.get('SELECT config FROM permission_configs WHERE id = ? AND config_type = ?', [`group_${groupName}`, 'group']);
+        if (!row)
+            return null;
+        return JSON.parse(row.config);
+    }
+    findAll() {
+        const rows = this.db.all('SELECT * FROM permission_configs ORDER BY created_at DESC');
+        return rows.map(row => ({
+            id: row.id,
+            agentId: row.agent_id,
+            configType: row.config_type,
+            config: row.config,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        }));
+    }
+    findByAgentId(agentId) {
+        const row = this.db.get('SELECT * FROM permission_configs WHERE agent_id = ?', [agentId]);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            agentId: row.agent_id,
+            configType: row.config_type,
+            config: row.config,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    delete(id) {
+        const result = this.db.run('DELETE FROM permission_configs WHERE id = ?', [id]);
+        return result.changes > 0;
+    }
+    deleteByAgentId(agentId) {
+        const result = this.db.run('DELETE FROM permission_configs WHERE agent_id = ?', [agentId]);
+        return result.changes > 0;
+    }
+    count() {
+        const row = this.db.get('SELECT COUNT(*) as count FROM permission_configs');
+        return row?.count || 0;
     }
 }

@@ -75,6 +75,23 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_configs (
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  config TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS permission_configs (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT,
+  config_type TEXT NOT NULL CHECK(config_type IN ('global', 'agent', 'group')),
+  config TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id);

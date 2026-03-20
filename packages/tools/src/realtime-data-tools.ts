@@ -31,8 +31,8 @@ export interface WeatherData {
   timestamp: number;
 }
 
-// 简单的内存缓存
-const priceCache = new Map<string, { data: PriceData; timestamp: number }>();
+// 简单的内存缓存 - 使用联合类型支持价格数据和新闻数据
+const priceCache = new Map<string, { data: PriceData | NewsData; timestamp: number }>();
 
 function getConfig(): RealtimeDataConfig {
   return {
@@ -51,17 +51,22 @@ const MOCK_GOLD_PRICE = 2150;
 /**
  * 从多个免费API获取金价数据
  * 优化：减少超时时间，快速降级
+ * @param forceRefresh 强制刷新：绕过缓存从网络获取最新数据
  */
-async function fetchGoldPrice(): Promise<PriceData> {
+async function fetchGoldPrice(forceRefresh?: boolean): Promise<PriceData> {
   const config = getConfig();
   const cacheKey = 'gold';
   const QUICK_TIMEOUT = 5000; // 快速超时 5秒
 
-  // 检查缓存
-  const cached = priceCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
-    console.log('[RealtimeData] 使用缓存的金价数据');
-    return cached.data;
+  // 检查缓存（除非强制刷新）
+  if (!forceRefresh) {
+    const cached = priceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
+      console.log('[RealtimeData] 使用缓存的金价数据');
+      return cached.data as PriceData;
+    }
+  } else {
+    console.log('[RealtimeData] 强制刷新，绕过缓存获取最新金价');
   }
 
   // 尝试多个数据源
@@ -145,14 +150,18 @@ async function fetchGoldPrice(): Promise<PriceData> {
 // 股票价格获取工具
 // ============================================
 
-async function fetchStockPrice(symbol: string): Promise<PriceData> {
+async function fetchStockPrice(symbol: string, forceRefresh?: boolean): Promise<PriceData> {
   const config = getConfig();
   const cacheKey = `stock:${symbol}`;
 
-  // 检查缓存
-  const cached = priceCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
-    return cached.data;
+  // 检查缓存（除非强制刷新）
+  if (!forceRefresh) {
+    const cached = priceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
+      return cached.data as PriceData;
+    }
+  } else {
+    console.log(`[RealtimeData] 强制刷新，绕过缓存获取股票 ${symbol} 最新价格`);
   }
 
   // 使用 Yahoo Finance API (免费但非官方)
@@ -216,14 +225,18 @@ async function fetchStockPrice(symbol: string): Promise<PriceData> {
 // 加密货币价格获取工具
 // ============================================
 
-async function fetchCryptoPrice(symbol: string): Promise<PriceData> {
+async function fetchCryptoPrice(symbol: string, forceRefresh?: boolean): Promise<PriceData> {
   const config = getConfig();
   const cacheKey = `crypto:${symbol.toLowerCase()}`;
 
-  // 检查缓存
-  const cached = priceCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
-    return cached.data;
+  // 检查缓存（除非强制刷新）
+  if (!forceRefresh) {
+    const cached = priceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
+      return cached.data as PriceData;
+    }
+  } else {
+    console.log(`[RealtimeData] 强制刷新，绕过缓存获取加密货币 ${symbol} 最新价格`);
   }
 
   // 使用 CoinGecko API (免费版)
@@ -326,40 +339,44 @@ async function fetchWithTimeout(
 // Tool 定义
 // ============================================
 
-export const goldPriceTool: Tool<{}, PriceData> = {
+export const goldPriceTool: Tool<{ forceRefresh?: boolean }, PriceData> = {
   name: 'get_gold_price',
   description: '获取实时国际金价（现货黄金价格），返回美元/盎司价格和24小时变化',
-  schema: z.object({}),
+  schema: z.object({
+    forceRefresh: z.boolean().optional().describe('强制刷新：绕过缓存，从网络获取最新数据'),
+  }),
   permissions: [{ type: 'network', pattern: '**' }],
 
-  async execute() {
-    return fetchGoldPrice();
+  async execute(input) {
+    return fetchGoldPrice(input.forceRefresh);
   },
 };
 
-export const stockPriceTool: Tool<{ symbol: string }, PriceData> = {
+export const stockPriceTool: Tool<{ symbol: string; forceRefresh?: boolean }, PriceData> = {
   name: 'get_stock_price',
   description: '获取股票实时价格，支持A股、港股、美股。例如：AAPL, TSLA, 600519',
   schema: z.object({
     symbol: z.string().describe('股票代码，如 AAPL, TSLA, 600519'),
+    forceRefresh: z.boolean().optional().describe('强制刷新：绕过缓存，从网络获取最新数据'),
   }),
   permissions: [{ type: 'network', pattern: '**' }],
 
   async execute(input) {
-    return fetchStockPrice(input.symbol);
+    return fetchStockPrice(input.symbol, input.forceRefresh);
   },
 };
 
-export const cryptoPriceTool: Tool<{ symbol: string }, PriceData> = {
+export const cryptoPriceTool: Tool<{ symbol: string; forceRefresh?: boolean }, PriceData> = {
   name: 'get_crypto_price',
   description: '获取加密货币实时价格，支持 bitcoin, ethereum 等',
   schema: z.object({
     symbol: z.string().describe('加密货币符号，如 bitcoin, ethereum, solana'),
+    forceRefresh: z.boolean().optional().describe('强制刷新：绕过缓存，从网络获取最新数据'),
   }),
   permissions: [{ type: 'network', pattern: '**' }],
 
   async execute(input) {
-    return fetchCryptoPrice(input.symbol);
+    return fetchCryptoPrice(input.symbol, input.forceRefresh);
   },
 };
 
@@ -381,7 +398,7 @@ export const weatherTool: Tool<{ location: string }, WeatherData> = {
 // ============================================
 
 export const smartRealtimeQueryTool: Tool<
-  { query: string; dataType?: 'price' | 'weather' | 'news' | 'auto' },
+  { query: string; dataType?: 'price' | 'weather' | 'news' | 'auto'; forceRefresh?: boolean },
   { success: boolean; data?: unknown; message: string; source: string; timestamp: number }
 > = {
   name: 'smart_realtime_query',
@@ -395,19 +412,21 @@ export const smartRealtimeQueryTool: Tool<
   schema: z.object({
     query: z.string().describe('用户查询内容'),
     dataType: z.enum(['price', 'weather', 'news', 'auto']).optional().describe('数据类型，默认auto自动判断'),
+    forceRefresh: z.boolean().optional().describe('强制刷新：绕过缓存，从网络获取最新数据'),
   }),
   permissions: [{ type: 'network', pattern: '**' }],
 
   async execute(input) {
     const query = input.query.toLowerCase();
     const dataType = input.dataType || 'auto';
+    const forceRefresh = input.forceRefresh;
 
     // 自动判断查询类型
     if (dataType === 'auto') {
       // 金价相关
       if (query.includes('金') || query.includes('gold') || query.includes('xau')) {
         try {
-          const data = await fetchGoldPrice();
+          const data = await fetchGoldPrice(forceRefresh);
           return {
             success: true,
             data,
@@ -453,7 +472,7 @@ export const smartRealtimeQueryTool: Tool<
       // 加密货币
       if (query.includes('比特币') || query.includes('bitcoin') || query.includes('btc')) {
         try {
-          const data = await fetchCryptoPrice('bitcoin');
+          const data = await fetchCryptoPrice('bitcoin', forceRefresh);
           return {
             success: true,
             data,
@@ -473,7 +492,7 @@ export const smartRealtimeQueryTool: Tool<
 
       if (query.includes('以太坊') || query.includes('ethereum') || query.includes('eth')) {
         try {
-          const data = await fetchCryptoPrice('ethereum');
+          const data = await fetchCryptoPrice('ethereum', forceRefresh);
           return {
             success: true,
             data,
@@ -536,9 +555,22 @@ export interface NewsData {
 /**
  * 获取最新新闻
  * 使用网络搜索获取最新新闻
+ * @param forceRefresh 强制刷新：绕过缓存从网络获取最新数据
  */
-async function fetchLatestNews(category: string = 'general'): Promise<NewsData> {
+async function fetchLatestNews(category: string = 'general', forceRefresh?: boolean): Promise<NewsData> {
   const config = getConfig();
+  const cacheKey = `news:${category}`;
+
+  // 检查缓存（除非强制刷新）
+  if (!forceRefresh) {
+    const cached = priceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < config.cacheDuration) {
+      console.log('[RealtimeData] 使用缓存的新闻数据');
+      return cached.data as NewsData;
+    }
+  } else {
+    console.log('[RealtimeData] 强制刷新，绕过缓存获取最新新闻');
+  }
 
   // 构建搜索查询
   const searchQueries: Record<string, string> = {
@@ -564,27 +596,33 @@ async function fetchLatestNews(category: string = 'general'): Promise<NewsData> 
       publishedAt: new Date().toISOString(),
     }));
 
-    return {
+    const newsData: NewsData = {
       category,
       items,
       timestamp: Date.now(),
     };
+
+    // 缓存新闻数据
+    priceCache.set(cacheKey, { data: newsData, timestamp: Date.now() });
+
+    return newsData;
   } catch (error) {
     console.error('[RealtimeData] News fetch error:', error);
     throw new Error(`无法获取新闻数据: ${error}`);
   }
 }
 
-export const newsTool: Tool<{ category?: string }, NewsData> = {
+export const newsTool: Tool<{ category?: string; forceRefresh?: boolean }, NewsData> = {
   name: 'get_latest_news',
   description: '获取最新新闻，支持分类：general(综合), tech(科技), finance(财经), sports(体育), entertainment(娱乐), international(国际)',
   schema: z.object({
     category: z.enum(['general', 'tech', 'finance', 'sports', 'entertainment', 'international']).optional().describe('新闻分类'),
+    forceRefresh: z.boolean().optional().describe('强制刷新：绕过缓存，从网络获取最新数据'),
   }),
   permissions: [{ type: 'network', pattern: '**' }],
 
   async execute(input) {
-    return fetchLatestNews(input.category || 'general');
+    return fetchLatestNews(input.category || 'general', input.forceRefresh);
   },
 };
 

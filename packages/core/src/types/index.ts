@@ -217,9 +217,12 @@ export interface Context {
     type: string;
     description: string;
     confidence: number;
+    dataType?: string;
     suggestedTool?: string;
     suggestedArgs?: Record<string, unknown>;
     triggerKeywords: string[];
+    /** 强制刷新标志 - 实时信息必须从网络获取最新数据 */
+    forceRefresh?: boolean;
   }>;
 }
 

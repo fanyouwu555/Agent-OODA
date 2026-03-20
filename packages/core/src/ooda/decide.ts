@@ -781,29 +781,67 @@ ${orientation.constraints.map(c => c.description).join(', ')}
     if (detectedGaps && detectedGaps.length > 0) {
       const primaryGap = detectedGaps[0];
       
+      // 特殊处理：current_time 类型的时间查询，直接返回当前时间（无需 suggestedTool）
+      if ((primaryGap.dataType === 'current_time' || primaryGap.dataType === 'current_date') && primaryGap.confidence >= 0.6) {
+        console.log(`[Decide] 检测到时间查询，直接返回系统时间`);
+        
+        const now = new Date();
+        const timeStr = now.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        });
+        const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][now.getDay()];
+        
+        return {
+          type: 'response',
+          content: `现在是 ${timeStr}，${weekday}`,
+          reasoningChain: [
+            {
+              step: 1,
+              thought: `检测到用户询问当前时间/日期`,
+            },
+            {
+              step: 2,
+              thought: `直接返回系统当前时间，无需搜索`,
+            },
+          ],
+        };
+      }
+      
       // 如果置信度足够高，自动选择工具
       if (primaryGap.confidence >= 0.6 && primaryGap.suggestedTool) {
         console.log(`[Decide] 基于知识缺口自动选择工具: ${primaryGap.suggestedTool}`);
         
         // 特殊处理：新闻摘要和实时信息请求
         // 使用 suggestedTool（web_search_and_fetch）获取实际内容
-        if (primaryGap.type === 'news_summary' || 
+        if (primaryGap.type === 'news_summary' ||
             primaryGap.type === 'realtime_info' ||
             primaryGap.type === 'web_search') {
-          
+
           // 使用知识缺口检测建议的工具和参数
-          const searchArgs = primaryGap.suggestedArgs || { 
-            query: orientation.primaryIntent.rawInput, 
+          const searchArgs = primaryGap.suggestedArgs || {
+            query: orientation.primaryIntent.rawInput,
             limit: 10,
             fetchContent: true,
           };
-          
+
           // 确保启用内容抓取
           searchArgs['fetchContent'] = true;
           searchArgs['summarize'] = true;
           searchArgs['summaryStyle'] = 'bullet';
           searchArgs['maxItems'] = 5;
-          
+
+          // 强制刷新：实时信息必须从网络获取最新数据
+          if (primaryGap.forceRefresh) {
+            searchArgs['forceRefresh'] = true;
+            console.log(`[Decide] 实时信息请求，启用强制刷新标志`);
+          }
+
           return {
             type: 'tool_call',
             toolName: primaryGap.suggestedTool,  // 使用建议的工具（web_search_and_fetch）

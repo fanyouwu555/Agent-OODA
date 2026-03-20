@@ -442,24 +442,25 @@ export const webFetchTool: Tool<{ url: string }, WebFetchResult> = {
   }
 };
 
-export const webSearchAndFetchTool: Tool<{ query: string; limit?: number; fetchContent?: boolean }, { results: Array<WebSearchResult & { content?: string }>; query: string; engine: string }> = {
+export const webSearchAndFetchTool: Tool<{ query: string; limit?: number; fetchContent?: boolean; forceRefresh?: boolean }, { results: Array<WebSearchResult & { content?: string }>; query: string; engine: string }> = {
   name: 'web_search_and_fetch',
   description: '搜索网络并可选择抓取结果页面的内容',
   schema: z.object({
     query: z.string().describe('搜索关键词'),
     limit: z.number().optional().describe('结果数量限制，默认3'),
     fetchContent: z.boolean().optional().describe('是否抓取搜索结果页面的内容'),
+    forceRefresh: z.boolean().optional().describe('强制刷新：实时信息必须从网络获取最新数据，绕过缓存'),
   }),
   permissions: [
     { type: 'network', pattern: '**' }
   ],
-  
+
   async execute(input) {
     const limit = input.limit || 3;
     const config = getConfig();
     const results = await webSearch(input.query, limit);
-    
-    if (input.fetchContent) {
+
+    if (input.fetchContent || input.forceRefresh) {
       const enrichedResults = await Promise.all(
         results.map(async (result) => {
           try {
@@ -473,14 +474,14 @@ export const webSearchAndFetchTool: Tool<{ query: string; limit?: number; fetchC
           }
         })
       );
-      
+
       return {
         results: enrichedResults,
         query: input.query,
         engine: config.searchEngine,
       };
     }
-    
+
     return {
       results,
       query: input.query,
