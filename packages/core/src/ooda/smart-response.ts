@@ -141,9 +141,13 @@ export async function smartResponse(
       const toolExecutorRegistry = getToolExecutorRegistry();
       const executor = toolExecutorRegistry.getExecutor(intentType);
 
+      console.log(`[SmartResponse] Step 4.1: executor = ${executor ? executor.toolName : 'null'}`);
+
       if (executor) {
         const toolRegistry = getToolRegistry();
         const tool = toolRegistry.get(executor.toolName);
+
+        console.log(`[SmartResponse] Step 4.2: tool = ${tool ? tool.name : 'null'}`);
 
         if (tool) {
           const context = {
@@ -154,6 +158,7 @@ export async function smartResponse(
           };
 
           const params = executor.extractParams(input, context);
+          console.log(`[SmartResponse] Step 4.3: params = ${JSON.stringify(params)}`);
 
           // 工具调用重试机制
           let retryCount = 0;
@@ -166,7 +171,9 @@ export async function smartResponse(
               formattedToolResult = executor.formatResult(toolResult);
               usedTools = true;
 
-              console.log(`[SmartResponse] Tool result: ${formattedToolResult}`);
+              console.log(`[SmartResponse] Step 4.4: Tool executed successfully`);
+              console.log(`[SmartResponse] Step 4.5: toolResult = ${JSON.stringify(toolResult)}`);
+              console.log(`[SmartResponse] Step 4.6: formattedToolResult = ${formattedToolResult}`);
               await onEvent('tool_result', { content: formattedToolResult });
               break;
             } catch (error) {
@@ -186,14 +193,19 @@ export async function smartResponse(
 
           // 如果工具调用失败但有fallback结果，尝试使用
           if (!toolResult && lastError) {
-            console.log(`[SmartResponse] Tool failed, using fallback for ${intentType}`);
+            console.log(`[SmartResponse] Step 4.7: Tool failed, trying fallback`);
             // 尝试使用缓存或其他方式获取数据
             toolResult = await getFallbackResult(intentType);
             if (toolResult) {
               formattedToolResult = executor.formatResult(toolResult);
+              console.log(`[SmartResponse] Step 4.8: Fallback result = ${formattedToolResult}`);
             }
           }
+        } else {
+          console.log(`[SmartResponse] Step 4.2: TOOL NOT FOUND - ${executor.toolName}`);
         }
+      } else {
+        console.log(`[SmartResponse] Step 4.1: EXECUTOR NOT FOUND for intent ${intentType}`);
       }
     } catch (error) {
       console.error(`[SmartResponse] Tool execution error:`, error);
@@ -257,7 +269,14 @@ export async function smartResponse(
   );
   monitor.endTimer('promptBuildTime');
 
-  console.log(`[SmartResponse] Using ${messages.length} messages, maxTokens: ${maxTokens}`);
+  console.log(`[SmartResponse] Step 5: Prompt built with ${messages.length} messages, maxTokens: ${maxTokens}`);
+  console.log(`[SmartResponse] Step 5.1: toolResult = ${toolResult ? 'present' : 'null'}`);
+  console.log(`[SmartResponse] Step 5.2: formattedToolResult = ${formattedToolResult || 'null'}`);
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const preview = msg.content.length > 200 ? msg.content.substring(0, 200) + '...' : msg.content;
+    console.log(`[SmartResponse] Step 5.3: message[${i}] ${msg.role}: ${preview}`);
+  }
 
   // 7. 流式生成响应（带自动续传机制）
   monitor.startTimer('llmResponseTime');

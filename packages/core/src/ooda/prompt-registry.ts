@@ -140,7 +140,7 @@ export function createDefaultPromptRegistry(): PromptTemplateRegistry {
   // 天气查询模板
   registry.register({
     name: 'realtime_weather',
-    systemPrompt: '你是AI助手。直接描述天气状况，例如："北京今天晴天，气温15到25度"。不要复述工具结果，不要添加额外解释。',
+    systemPrompt: '你是AI助手。用户询问天气时，直接使用提供的数据回答，不要编造天气信息。',
     userPromptTemplate: '问题：{input}\n数据：{formattedToolResult}',
     maxTokens: 100,
     description: '天气查询响应',
@@ -149,7 +149,7 @@ export function createDefaultPromptRegistry(): PromptTemplateRegistry {
   // 黄金价格模板
   registry.register({
     name: 'realtime_gold',
-    systemPrompt: '你是AI助手。直接报出黄金价格，例如："当前黄金价格是2020美元/盎司"。不要复述工具结果。',
+    systemPrompt: '你是AI助手。用户询问黄金价格时，直接使用提供的数据回答，不要编造价格。',
     userPromptTemplate: '问题：{input}\n数据：{formattedToolResult}',
     maxTokens: 100,
     description: '黄金价格响应',
@@ -158,7 +158,7 @@ export function createDefaultPromptRegistry(): PromptTemplateRegistry {
   // 股票价格模板
   registry.register({
     name: 'realtime_stock',
-    systemPrompt: '你是AI助手。直接报出股票价格，例如："苹果(AAPL)当前股价是180美元"。不要复述工具结果。',
+    systemPrompt: '你是AI助手。用户询问股票价格时，直接使用提供的数据回答，不要编造价格。',
     userPromptTemplate: '问题：{input}\n数据：{formattedToolResult}',
     maxTokens: 100,
     description: '股票价格响应',
@@ -167,7 +167,7 @@ export function createDefaultPromptRegistry(): PromptTemplateRegistry {
   // 加密货币模板
   registry.register({
     name: 'realtime_crypto',
-    systemPrompt: '你是AI助手。直接报出加密货币价格，例如："比特币当前价格是50000美元"。不要复述工具结果。',
+    systemPrompt: '你是AI助手。用户询问加密货币价格时，直接使用提供的数据回答，不要编造价格。',
     userPromptTemplate: '问题：{input}\n数据：{formattedToolResult}',
     maxTokens: 100,
     description: '加密货币价格响应',

@@ -771,13 +771,19 @@ ${orientation.constraints.map(c => c.description).join(', ')}
   }
 
   private async selectNextAction(
-    plan: ActionPlan, 
+    plan: ActionPlan,
     orientation: Orientation,
     analysis: DecisionAnalysis
   ): Promise<Action> {
+    // ========== 诊断日志 ==========
+    console.log(`[Decide] selectNextAction called`);
+    console.log(`[Decide] detectedKnowledgeGaps:`, JSON.stringify(orientation.relevantContext?.detectedKnowledgeGaps));
+    console.log(`[Decide] primaryIntent:`, orientation.primaryIntent.type, orientation.primaryIntent.rawInput);
+
     // ========== 新增：基于知识缺口自动选择工具 ==========
     // 检查 Orient 阶段是否检测到需要工具调用的知识缺口
     const detectedGaps = orientation.relevantContext?.detectedKnowledgeGaps;
+    console.log(`[Decide] detectedGaps check:`, { exists: !!detectedGaps, length: detectedGaps?.length });
     if (detectedGaps && detectedGaps.length > 0) {
       const primaryGap = detectedGaps[0];
       
@@ -814,9 +820,23 @@ ${orientation.constraints.map(c => c.description).join(', ')}
       }
       
       // 如果置信度足够高，自动选择工具
-      if (primaryGap.confidence >= 0.6 && primaryGap.suggestedTool) {
-        console.log(`[Decide] 基于知识缺口自动选择工具: ${primaryGap.suggestedTool}`);
-        
+      // 添加 dataType 到工具名称的映射
+      const dataTypeToTool: Record<string, { toolName: string; defaultArgs?: Record<string, unknown> }> = {
+        'gold_price': { toolName: 'get_gold_price' },
+        'silver_price': { toolName: 'get_gold_price' },
+        'stock': { toolName: 'get_stock_price', defaultArgs: { symbol: '' } },
+        'crypto': { toolName: 'get_crypto_price', defaultArgs: { symbol: '' } },
+        'forex': { toolName: 'smart_realtime_query', defaultArgs: { query: '' } },
+        'weather': { toolName: 'get_weather' },
+        'news': { toolName: 'get_latest_news' },
+        'oil_price': { toolName: 'smart_realtime_query', defaultArgs: { query: '' } },
+      };
+
+      const selectedTool = primaryGap.suggestedTool || (dataTypeToTool[primaryGap.dataType || '']?.toolName);
+
+      if (primaryGap.confidence >= 0.6 && selectedTool) {
+        console.log(`[Decide] 基于知识缺口自动选择工具: ${selectedTool} (dataType: ${primaryGap.dataType})`);
+
         // 特殊处理：新闻摘要和实时信息请求
         // 使用 suggestedTool（web_search_and_fetch）获取实际内容
         if (primaryGap.type === 'news_summary' ||
@@ -844,7 +864,7 @@ ${orientation.constraints.map(c => c.description).join(', ')}
 
           return {
             type: 'tool_call',
-            toolName: primaryGap.suggestedTool,  // 使用建议的工具（web_search_and_fetch）
+            toolName: selectedTool,
             args: searchArgs,
             reasoningChain: [
               {
@@ -853,16 +873,40 @@ ${orientation.constraints.map(c => c.description).join(', ')}
               },
               {
                 step: 2,
-                thought: `使用 ${primaryGap.suggestedTool} 获取实际内容并生成摘要`,
+                thought: `使用 ${selectedTool} 获取实际内容并生成摘要`,
               },
             ],
           };
         }
-        
+
+        // 实时数据工具调用
+        const toolConfig = dataTypeToTool[primaryGap.dataType || ''];
+        let toolArgs = primaryGap.suggestedArgs || {};
+
+        // 如果没有提供参数但有默认参数，使用用户输入作为查询
+        if (Object.keys(toolArgs).length === 0 && toolConfig?.defaultArgs) {
+          if (primaryGap.dataType === 'gold_price' || primaryGap.dataType === 'silver_price') {
+            // 金价/银价不需要额外参数
+            toolArgs = {};
+          } else if (primaryGap.dataType === 'weather') {
+            // 天气可以从用户输入提取位置，或者使用默认
+            toolArgs = { city: '北京' };
+          } else {
+            // 其他类型使用用户输入作为查询
+            toolArgs = { query: orientation.primaryIntent.rawInput };
+          }
+        }
+
+        // 强制刷新
+        if (primaryGap.forceRefresh) {
+          toolArgs['forceRefresh'] = true;
+          console.log(`[Decide] 实时数据请求，启用强制刷新标志`);
+        }
+
         return {
           type: 'tool_call',
-          toolName: primaryGap.suggestedTool,
-          args: primaryGap.suggestedArgs || {},
+          toolName: selectedTool,
+          args: toolArgs,
           reasoningChain: [
             {
               step: 1,
@@ -870,7 +914,7 @@ ${orientation.constraints.map(c => c.description).join(', ')}
             },
             {
               step: 2,
-              thought: `自动选择工具: ${primaryGap.suggestedTool} 来获取所需信息`,
+              thought: `自动选择工具: ${selectedTool} 来获取实时数据 (dataType: ${primaryGap.dataType})`,
             },
           ],
         };

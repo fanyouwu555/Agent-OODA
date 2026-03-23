@@ -10,6 +10,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./metrics/ooda-metrics": {
+      "import": "./dist/metrics/ooda-metrics.js",
+      "types": "./dist/metrics/ooda-metrics.d.ts"
     }
   },
   "scripts": {

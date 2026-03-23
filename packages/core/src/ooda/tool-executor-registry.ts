@@ -123,7 +123,31 @@ const goldToolExecutor: ToolExecutor = {
     if (typeof result === 'string') {
       return result;
     }
-    return `当前黄金价格是${result.price}${result.unit}`;
+
+    const price = result.price;
+    const currency = result.currency || 'USD';
+    const unit = result.unit || (currency === 'CNY' ? '元/克' : '美元/盎司');
+
+    // 验证价格合理性
+    if (currency === 'CNY') {
+      // 国内金价应该在 800-1500 元/克
+      if (price < 800 || price > 1500) {
+        console.warn(`[GoldExecutor] 警告：检测到异常国内金价 ${price} ${unit}，数据可能不正确`);
+        return `数据异常：获取到的国内金价是 ${price} ${unit}，这明显偏离正常范围（800-1500元/克），请检查数据源或网络连接`;
+      }
+      const change = result.change24h !== undefined ? `，24小时变化 ${result.change24h > 0 ? '+' : ''}${result.change24h.toFixed(2)}` : '';
+      const warning = result.warning ? `（${result.warning}）` : '';
+      return `今日国内金价（上海黄金交易所 Au99.99）：${price.toFixed(2)} ${unit}。${change}${warning}`;
+    } else {
+      // 国际金价应该在 1000-10000 美元/盎司
+      if (price < 1000 || price > 10000) {
+        console.warn(`[GoldExecutor] 警告：检测到异常国际金价 ${price} ${unit}，数据可能不正确`);
+        return `数据异常：获取到的国际金价是 ${price} ${unit}，这明显偏离正常范围（1000-10000美元/盎司），请检查数据源或网络连接`;
+      }
+      const change = result.change24h !== undefined ? `，24小时变化 ${result.change24h > 0 ? '+' : ''}${result.change24h.toFixed(2)}%` : '';
+      const warning = result.warning ? `（${result.warning}）` : '';
+      return `当前国际黄金价格：${price.toFixed(2)} ${unit}。${change}${warning}`;
+    }
   },
 };
 

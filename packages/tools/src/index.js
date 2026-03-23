@@ -11,40 +11,50 @@ import { readFileTool, writeFileTool, runBashTool, listDirectoryTool, deleteFile
 import { webSearchTool, webFetchTool, webSearchAndFetchTool } from './web-tools';
 import { calculatorTool, weatherTool, translateTool, timerTool, currencyTool, uuidTool, base64Tool, hashTool, randomNumberTool, colorTool } from './utility-tools';
 import { gitTools } from './git-tools';
+import { realtimeDataTools } from './realtime-data-tools';
 import { FileSkill, WebSkill, CodeSkill } from './skills/base-skill';
 import { DataAnalysisSkill, ImageProcessingSkill, PDFProcessingSkill, CodeAnalysisSkill, APITestSkill, DatabaseQuerySkill } from './skills/advanced-skills';
-import { getSkillRegistry } from '@ooda-agent/core';
+import { getSkillRegistry, getToolRegistry } from '@ooda-agent/core';
+
 export function initializeTools() {
-    const registry = new ToolRegistry();
-    registry.register(readFileTool);
-    registry.register(writeFileTool);
-    registry.register(runBashTool);
-    registry.register(listDirectoryTool);
-    registry.register(deleteFileTool);
-    registry.register(grepTool);
-    registry.register(globTool);
-    registry.register(getTimeTool);
-    registry.register(webSearchTool);
-    registry.register(webFetchTool);
-    registry.register(webSearchAndFetchTool);
-    registry.register(calculatorTool);
-    registry.register(weatherTool);
-    registry.register(translateTool);
-    registry.register(timerTool);
-    registry.register(currencyTool);
-    registry.register(uuidTool);
-    registry.register(base64Tool);
-    registry.register(hashTool);
-    registry.register(randomNumberTool);
-    registry.register(colorTool);
-    // 注册 Git 工具
+    const registry = getToolRegistry();
+
+    registry.registerTool(readFileTool);
+    registry.registerTool(writeFileTool);
+    registry.registerTool(runBashTool);
+    registry.registerTool(listDirectoryTool);
+    registry.registerTool(deleteFileTool);
+    registry.registerTool(grepTool);
+    registry.registerTool(globTool);
+    registry.registerTool(getTimeTool);
+    registry.registerTool(webSearchTool);
+    registry.registerTool(webFetchTool);
+    registry.registerTool(webSearchAndFetchTool);
+    registry.registerTool(calculatorTool);
+    registry.registerTool(weatherTool);
+    registry.registerTool(translateTool);
+    registry.registerTool(timerTool);
+    registry.registerTool(currencyTool);
+    registry.registerTool(uuidTool);
+    registry.registerTool(base64Tool);
+    registry.registerTool(hashTool);
+    registry.registerTool(randomNumberTool);
+    registry.registerTool(colorTool);
+
     for (const tool of gitTools) {
-        registry.register(tool);
+        registry.registerTool(tool);
     }
+
+    for (const tool of realtimeDataTools) {
+        registry.registerTool(tool);
+    }
+
     return registry;
 }
+
 export function initializeSkills() {
     const skillRegistry = getSkillRegistry();
+
     skillRegistry.register(new FileSkill());
     skillRegistry.register(new WebSkill());
     skillRegistry.register(new CodeSkill());

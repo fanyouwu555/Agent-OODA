@@ -16,10 +16,12 @@ export interface PriceData {
   symbol: string;
   price: number;
   currency: string;
+  unit?: string;
   timestamp: number;
   source: string;
   change24h?: number;
   changePercent24h?: number;
+  warning?: string;
 }
 
 export interface WeatherData {
@@ -45,9 +47,6 @@ function getConfig(): RealtimeDataConfig {
 // 金价获取工具
 // ============================================
 
-// 模拟金价数据（当API都失败时使用）
-const MOCK_GOLD_PRICE = 2150;
-
 /**
  * 从多个免费API获取金价数据
  * 优化：减少超时时间，快速降级
@@ -72,7 +71,138 @@ async function fetchGoldPrice(forceRefresh?: boolean): Promise<PriceData> {
   // 尝试多个数据源
   const errors: string[] = [];
 
-  // 1. 尝试使用黄金价格API (goldapi.io) - 需要 API key
+  // 1. 上海黄金交易所 (SGE) - 国内金价优先
+  try {
+    // 使用专业黄金价格网站获取国内金价
+    const response = await fetchWithTimeout(
+      'https://www.chinagold.org.cn/market/gold-price.html',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
+        },
+      },
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const html = await response.text();
+      // 尝试多种价格提取模式
+      const patterns = [
+        /Au99\.99[^\d]*(\d+\.?\d*)/i,
+        /国内金价[^\d]*(\d+\.?\d*)/i,
+        /现货黄金[^\d]*(\d+\.?\d*)/i,
+        /(\d{3,4}\.\d{2})/,
+      ];
+
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match) {
+          const price = parseFloat(match[1]);
+          // 国内金价通常在 800-1500 元/克 范围内
+          if (price >= 800 && price <= 1500) {
+            const priceData: PriceData = {
+              symbol: 'Au99.99',
+              price: price,
+              currency: 'CNY',
+              unit: '元/克',
+              timestamp: Date.now(),
+              source: '中国黄金协会',
+            };
+            priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+            console.log(`[RealtimeData] 国内金价: ${price} 元/克`);
+            return priceData;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`中国黄金协会: ${error}`);
+  }
+
+  // 2. 尝试东方财富网黄金数据
+  try {
+    const response = await fetchWithTimeout(
+      'https://quote.eastmoney.com/qihuo/QH0.html',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const html = await response.text();
+      // 东方财富网格式
+      const match = html.match(/(\d{3,4}\.\d{2})/);
+      if (match) {
+        const price = parseFloat(match[1]);
+        if (price >= 800 && price <= 1500) {
+          const priceData: PriceData = {
+            symbol: 'Au99.99',
+            price: price,
+            currency: 'CNY',
+            unit: '元/克',
+            timestamp: Date.now(),
+            source: '东方财富',
+          };
+          priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+          console.log(`[RealtimeData] 国内金价(东方财富): ${price} 元/克`);
+          return priceData;
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`东方财富: ${error}`);
+  }
+
+  // 3. 直接抓取黄金网实时报价
+  try {
+    const response = await fetchWithTimeout(
+      'https://www.24k.hk/gold-price-china/',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const html = await response.text();
+      const patterns = [
+        /人民币.*?(\d+\.?\d*).*?元\/克/i,
+        /CNY.*?(\d+\.?\d*)/i,
+        /(\d{3,4}\.\d{2})/,
+      ];
+
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match) {
+          const price = parseFloat(match[1]);
+          if (price >= 800 && price <= 1500) {
+            const priceData: PriceData = {
+              symbol: 'Au99.99',
+              price: price,
+              currency: 'CNY',
+              unit: '元/克',
+              timestamp: Date.now(),
+              source: '24k.hk',
+            };
+            priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+            console.log(`[RealtimeData] 国内金价(24k.hk): ${price} 元/克`);
+            return priceData;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`24k.hk: ${error}`);
+  }
+
+  // 4. goldapi.io - 国际金价 (需要 API key)
   try {
     const apiKey = process.env.GOLD_API_KEY;
     if (apiKey) {
@@ -106,44 +236,221 @@ async function fetchGoldPrice(forceRefresh?: boolean): Promise<PriceData> {
     errors.push(`goldapi.io: ${error}`);
   }
 
-  // 2. 使用网络搜索获取实时金价（缩短超时）
+  // 2. 使用 web_search_and_fetch 获取实际页面内容来提取价格
   try {
-    const { webSearch } = await import('./web-tools');
-    const searchResults = await webSearch('今日国际金价 现货黄金 实时', 3);
+    const { webSearchAndFetchTool } = await import('./web-tools');
+    const searchResult = await webSearchAndFetchTool.execute({
+      query: '今日国际金价 现货黄金 XAU USD 价格',
+      limit: 3,
+      fetchContent: true,
+    }, { sessionId: 'gold-price', workingDirectory: process.cwd(), maxExecutionTime: 10000, resources: { memory: 0, cpu: 0 } });
 
-    if (searchResults.length > 0) {
-      // 从搜索结果中提取价格信息
-      const combinedSnippet = searchResults.map(r => r.snippet).join(' ');
-      const priceMatch = combinedSnippet.match(/(\d{1,2},?\d{3}\.?\d{0,2})/);
+    if (searchResult.results && searchResult.results.length > 0) {
+      // 从实际页面内容中提取价格
+      for (const result of searchResult.results) {
+        const content = result.content || result.snippet || '';
+        // 尝试匹配各种价格格式
+        const pricePatterns = [
+          /金价[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i,
+          /gold[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i,
+          /XAU[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i,
+          /(\d{1,3}(?:,\d{3})*\.\d{2})/,
+        ];
 
-      if (priceMatch) {
-        const price = parseFloat(priceMatch[1].replace(',', ''));
+        for (const pattern of pricePatterns) {
+          const match = content.match(pattern);
+          if (match) {
+            const priceStr = match[1].replace(/,/g, '');
+            const price = parseFloat(priceStr);
+            // 过滤明显不合理的黄金价格（小于100或大于10000）
+            if (price > 100 && price < 10000) {
+              console.log(`[RealtimeData] 从 ${result.url} 提取到金价: ${price}`);
+              const priceData: PriceData = {
+                symbol: 'XAU/USD',
+                price: price,
+                currency: 'USD',
+                timestamp: Date.now(),
+                source: 'web_content:' + result.url,
+              };
+              priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+              return priceData;
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`web_search_and_fetch: ${error}`);
+  }
+
+  // 3. 尝试 Yahoo Finance API (无需 API key)
+  try {
+    const response = await fetchWithTimeout(
+      `https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=1d&range=1d`,
+      {},
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      const result = data?.chart?.result?.[0];
+      if (result?.meta?.regularMarketPrice) {
+        const price = result.meta.regularMarketPrice;
         const priceData: PriceData = {
           symbol: 'XAU/USD',
           price: price,
           currency: 'USD',
           timestamp: Date.now(),
-          source: 'web_search:' + searchResults[0].url,
+          source: 'Yahoo Finance (GC=F)',
+          change24h: result.meta.regularMarketChange || 0,
+          changePercent24h: result.meta.regularMarketChangePercent || 0,
         };
         priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+        console.log(`[RealtimeData] Yahoo Finance 金价: ${price}`);
         return priceData;
       }
     }
   } catch (error) {
-    errors.push(`web_search: ${error}`);
+    errors.push(`Yahoo Finance: ${error}`);
   }
 
-  // 3. 使用模拟数据（快速降级）
-  console.log('[RealtimeData] 使用模拟金价数据');
-  const priceData: PriceData = {
-    symbol: 'XAU/USD',
-    price: MOCK_GOLD_PRICE,
-    currency: 'USD',
-    timestamp: Date.now(),
-    source: 'mock_data',
-  };
-  priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
-  return priceData;
+  // 4. 尝试直接抓取kitco.com的金价页面
+  try {
+    const response = await fetchWithTimeout(
+      'https://www.kitco.com/charts/livegold.html',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      },
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const html = await response.text();
+      // 从kitco页面提取价格
+      const priceMatch = html.match(/goldAsk\s*=\s*'(\d+\.?\d*)'/);
+      if (priceMatch) {
+        const price = parseFloat(priceMatch[1]);
+        const priceData: PriceData = {
+          symbol: 'XAU/USD',
+          price: price,
+          currency: 'USD',
+          timestamp: Date.now(),
+          source: 'kitco.com',
+        };
+        priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+        console.log(`[RealtimeData] Kitco 金价: ${price}`);
+        return priceData;
+      }
+    }
+  } catch (error) {
+    errors.push(`kitco.com: ${error}`);
+  }
+
+  // 5. 尝试 metals-API.com 免费端点
+  try {
+    const response = await fetchWithTimeout(
+      `https://metals-api.com/api/latest?access_key=free&base=USD&symbols=XAU`,
+      {},
+      QUICK_TIMEOUT
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.rates?.XAU) {
+        // metals-api 返回的是 1 USD = ? XAU
+        // 如果 XAU 价值大于 1，说明这是错误数据（金价不可能低于 1 美元）
+        if (data.rates.XAU >= 1) {
+          errors.push('metals-api: 返回数据格式错误 (rates.XAU >= 1)');
+        } else {
+          const price = 1 / data.rates.XAU;
+          // 验证价格合理性：黄金价格应该在 100-10000 美元之间
+          if (price >= 100 && price <= 10000) {
+            const priceData: PriceData = {
+              symbol: 'XAU/USD',
+              price: price,
+              currency: 'USD',
+              timestamp: Date.now(),
+              source: 'metals-api.com',
+            };
+            priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+            console.log(`[RealtimeData] Metals-API 金价: ${price}`);
+            return priceData;
+          } else {
+            errors.push(`metals-api: 价格不合理 (${price})`);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`metals-api: ${error}`);
+  }
+
+  // 6. 使用 web_search_and_fetch 获取实际页面内容来提取价格
+  try {
+    const { webSearchAndFetchTool } = await import('./web-tools');
+    const searchResult = await webSearchAndFetchTool.execute({
+      query: 'gold price XAU USD today',
+      limit: 3,
+      fetchContent: true,
+    }, { sessionId: 'gold-price', workingDirectory: process.cwd(), maxExecutionTime: 10000, resources: { memory: 0, cpu: 0 } });
+
+    if (searchResult.results && searchResult.results.length > 0) {
+      for (const result of searchResult.results) {
+        const content = result.content || result.snippet || '';
+        const pricePatterns = [
+          /gold[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i,
+          /XAU[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i,
+          /(\d{1,3}(?:,\d{3})*\.\d{2})/,
+        ];
+
+        for (const pattern of pricePatterns) {
+          const match = content.match(pattern);
+          if (match) {
+            const priceStr = match[1].replace(/,/g, '');
+            const price = parseFloat(priceStr);
+            if (price > 100 && price < 10000) {
+              console.log(`[RealtimeData] 从 ${result.url} 提取到金价: ${price}`);
+              const priceData: PriceData = {
+                symbol: 'XAU/USD',
+                price: price,
+                currency: 'USD',
+                timestamp: Date.now(),
+                source: 'web_content:' + result.url,
+              };
+              priceCache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+              return priceData;
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`web_search_and_fetch: ${error}`);
+  }
+
+  // 所有API都失败，返回明确的错误信息
+  console.error('[RealtimeData] 所有金价API都失败:', errors);
+
+  // 检查是否有缓存可用（即使过期也比错误数据好）
+  const expiredCache = priceCache.get(cacheKey);
+  if (expiredCache) {
+    const priceData = expiredCache.data as PriceData;
+    const cacheAge = Math.round((Date.now() - expiredCache.timestamp) / 60000);
+    // 验证缓存数据是否合理
+    if (priceData.price >= 1000 && priceData.price <= 10000) {
+      console.log(`[RealtimeData] 使用过期缓存数据（${cacheAge}分钟前）`);
+      return {
+        ...priceData,
+        source: `缓存(过期${cacheAge}分钟): ${priceData.source}`,
+        warning: `数据来自${cacheAge}分钟前的缓存，当前网络不可用，价格可能已变化`,
+      };
+    }
+  }
+
+  // 无法获取任何有效数据，返回明确错误
+  throw new Error(`无法获取金价数据：网络连接不可用或所有API均已失效。请检查网络后重试。`);
 }
 
 // ============================================
